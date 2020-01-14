@@ -1,31 +1,5 @@
-import sys
-import os
+
 import argparse
-import logging
-import json
-import time
-import subprocess
-from shutil import copyfile
-
-import numpy as np
-from sklearn import metrics
-from easydict import EasyDict as edict
-import torch
-from torch.utils.data import DataLoader
-import torch.nn.functional as F
-from torch.nn import DataParallel
-
-from tensorboardX import SummaryWriter
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)) + '/../')
-
-torch.manual_seed(0)
-torch.cuda.manual_seed_all(0)
-
-from data.dataset import ImageDataset  # noqa
-from model.classifier import Classifier  # noqa
-from utils.misc import lr_schedule  # noqa
-from model.utils import get_optimizer  # noqa
 
 parser = argparse.ArgumentParser(description='Train model')
 parser.add_argument('cfg_path', default=None, metavar='CFG_PATH', type=str,
@@ -43,33 +17,72 @@ parser.add_argument('--resume', default=0, type=int, help="If resume from "
 parser.add_argument('--logtofile', default=False, type=bool, help="Save log "
                     "in save_path/log.txt if set True")
 parser.add_argument('--verbose', default=False, type=bool, help="Detail info")
+args = parser.parse_args()
+
+from os.path import dirname, abspath, join, exists
+from sys import path
+path.append(join(dirname(abspath(__file__)), '..'))
+import logging
+import json
+import time
+import subprocess
+from shutil import copyfile
+
+import numpy as np
+from sklearn import metrics
+from easydict import EasyDict as edict
+import torch
+from torch.utils.data import DataLoader
+import torch.nn.functional as F
+from torch.nn import DataParallel
+
+from tensorboardX import SummaryWriter
+
+
+torch.manual_seed(0)
+torch.cuda.manual_seed_all(0)  # type: ignore
+
+from data.dataset import ImageDataset  # noqa
+from model.classifier import Classifier  # noqa
+from utils.misc import lr_schedule  # noqa
+from model.utils import get_optimizer  # noqa
 
 
 def get_loss(output, target, index, device, cfg):
-    if cfg.criterion == 'BCE':
-        for num_class in cfg.num_classes:
-            assert num_class == 1
-        target = target[:, index].view(-1)
-        pos_weight = torch.from_numpy(
-            np.array(cfg.pos_weight,
-                     dtype=np.float32)).to(device).type_as(target)
-        if cfg.batch_weight:
-            if target.sum() == 0:
-                loss = torch.tensor(0., requires_grad=True).to(device)
-            else:
-                weight = (target.size()[0] - target.sum()) / target.sum()
-                loss = F.binary_cross_entropy_with_logits(
-                    output[index].view(-1), target, pos_weight=weight)
+    """return binary loss and accuracy between output and target
+
+    The binary loss is computed from logits.  So, don't include a
+    sigmoid layer in the network.
+
+    Parameters
+    ----------
+        output:  network logits
+        target:  binary ground-truth classes
+        index:  column for which to compute the binary loss
+        device:  device where to compute the logit
+        cfg:  configuration namespace"""
+
+    assert cfg.criterion == 'BCE', f"Unknown criterion '{cfg.criterion}'"
+    assert all(n == 1 for n in cfg.num_classes)
+    target = target[:, index].view(-1)
+    pos_weight = torch.from_numpy(np.array(cfg.pos_weight,
+        dtype=np.float32)).to(device).type_as(target)
+    if cfg.batch_weight:
+        if target.sum() == 0:
+            loss = torch.tensor(0., requires_grad=True).to(device)
         else:
+            weight = (target.size()[0] - target.sum()) / target.sum()
             loss = F.binary_cross_entropy_with_logits(
-                output[index].view(-1), target, pos_weight=pos_weight[index])
+                output[index].view(-1), target, pos_weight=weight)
 
-        label = torch.sigmoid(output[index].view(-1)).ge(0.5).float()
-        acc = (target == label).float().sum() / len(label)
     else:
-        raise Exception('Unknown criterion : {}'.format(cfg.criterion))
+        loss = F.binary_cross_entropy_with_logits(
+            output[index].view(-1), target, pos_weight=pos_weight[index])
 
-    return (loss, acc)
+    label = torch.sigmoid(output[index].view(-1)).ge(0.5).float()
+    acc = (target == label).float().sum() / len(label)
+
+    return loss, acc
 
 
 def train_epoch(summary, summary_dev, cfg, args, model, dataloader,
@@ -78,7 +91,7 @@ def train_epoch(summary, summary_dev, cfg, args, model, dataloader,
     torch.set_grad_enabled(True)
     model.train()
     device_ids = list(map(int, args.device_ids.split(',')))
-    device = torch.device('cuda:{}'.format(device_ids[0]))
+    device = torch.device(f"cuda:{device_ids[0]}")
     steps = len(dataloader)
     dataiter = iter(dataloader)
     label_header = dataloader.dataset._label_header
@@ -93,7 +106,9 @@ def train_epoch(summary, summary_dev, cfg, args, model, dataloader,
         target = target.to(device)
         output, logit_map = model(image)
 
-        # different number of tasks
+        # Training step.  Note that each class is implicitely weighted using
+        # the array, `cfg.pos_weight`.
+
         loss = 0
         for t in range(num_tasks):
             loss_t, acc_t = get_loss(output, target, t, device, cfg)
@@ -104,6 +119,8 @@ def train_epoch(summary, summary_dev, cfg, args, model, dataloader,
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
+        # The rest is logging.
 
         summary['step'] += 1
 
@@ -206,7 +223,7 @@ def train_epoch(summary, summary_dev, cfg, args, model, dataloader,
                      'auc_dev_best': best_dict['auc_dev_best'],
                      'loss_dev_best': best_dict['loss_dev_best'],
                      'state_dict': model.module.state_dict()},
-                    os.path.join(args.save_path, 'best{}.ckpt'.format(
+                    join(args.save_path, 'best{}.ckpt'.format(
                         best_dict['best_idx']))
                 )
                 best_dict['best_idx'] += 1
@@ -276,54 +293,50 @@ def run(args):
         if args.verbose is True:
             print(json.dumps(cfg, indent=4))
 
-    if not os.path.exists(args.save_path):
-        os.mkdir(args.save_path)
-    if args.logtofile is True:
-        logging.basicConfig(filename=args.save_path + '/log.txt',
+    os.makedirs(args.save_path, exist_ok=True)
+    if args.logtofile:
+        logging.basicConfig(filename=join(args.save_path, 'log.txt'),
                             filemode="w", level=logging.INFO)
     else:
         logging.basicConfig(level=logging.INFO)
 
     if not args.resume:
-        with open(os.path.join(args.save_path, 'cfg.json'), 'w') as f:
+        with open(join(args.save_path, 'cfg.json'), 'w') as f:
             json.dump(cfg, f, indent=1)
 
     device_ids = list(map(int, args.device_ids.split(',')))
     num_devices = torch.cuda.device_count()
-    if num_devices < len(device_ids):
-        raise Exception(
-            '#available gpu : {} < --device_ids : {}'
-            .format(num_devices, len(device_ids)))
-    device = torch.device('cuda:{}'.format(device_ids[0]))
+    assert num_devices >= len(device_ids), f"""
+    #available gpu : {num_devices} < --device_ids : {len(device_ids)}"""
+
+    device = torch.device(f"cuda:{device_ids[0]}")
 
     model = Classifier(cfg)
-    if args.verbose is True:
+    if args.verbose:
         from torchsummary import summary
-        if cfg.fix_ratio:
-            h, w = cfg.long_side, cfg.long_side
-        else:
-            h, w = cfg.height, cfg.width
+        h, w = (cfg.long_side, cfg.long_side) if cfg.fix_ratio \
+               else (cfg.height, cfg.width)
         summary(model.to(device), (3, h, w))
+
     model = DataParallel(model, device_ids=device_ids).to(device).train()
     if args.pre_train is not None:
-        if os.path.exists(args.pre_train):
+        if exists(args.pre_train):
             ckpt = torch.load(args.pre_train, map_location=device)
             model.module.load_state_dict(ckpt)
+
     optimizer = get_optimizer(model.parameters(), cfg)
 
-    src_folder = os.path.dirname(os.path.abspath(__file__)) + '/../'
-    dst_folder = os.path.join(args.save_path, 'classification')
+    src_folder = join(dirname(abspath(__file__)), '..')
+    dst_folder = join(args.save_path, 'classification')
     rc, size = subprocess.getstatusoutput('du --max-depth=0 %s | cut -f1'
                                           % src_folder)
-    if rc != 0:
-        raise Exception('Copy folder error : {}'.format(rc))
+    assert rc == 0, f"Copy folder error : {rc}"
     rc, err_msg = subprocess.getstatusoutput('cp -R %s %s' % (src_folder,
                                                               dst_folder))
-    if rc != 0:
-        raise Exception('copy folder error : {}'.format(err_msg))
+    assert rc == 0, f"copy folder error : {err_msg}"
 
-    copyfile(cfg.train_csv, os.path.join(args.save_path, 'train.csv'))
-    copyfile(cfg.dev_csv, os.path.join(args.save_path, 'dev.csv'))
+    copyfile(cfg.train_csv, join(args.save_path, 'train.csv'))
+    copyfile(cfg.dev_csv, join(args.save_path, 'dev.csv'))
 
     dataloader_train = DataLoader(
         ImageDataset(cfg.train_csv, cfg, mode='train'),
@@ -344,10 +357,10 @@ def run(args):
         "auc_dev_best": 0.0,
         "loss_dev_best": float('inf'),
         "fused_dev_best": 0.0,
-        "best_idx": 1}
-
+        "best_idx": 1
+    }
     if args.resume:
-        ckpt_path = os.path.join(args.save_path, 'train.ckpt')
+        ckpt_path = join(args.save_path, 'train.ckpt')
         ckpt = torch.load(ckpt_path, map_location=device)
         model.module.load_state_dict(ckpt['state_dict'])
         summary_train = {'epoch': ckpt['epoch'], 'step': ckpt['step']}
@@ -432,19 +445,18 @@ def run(args):
                 save_best = True
 
         if save_best:
-            torch.save(
-                {'epoch': summary_train['epoch'],
-                 'step': summary_train['step'],
-                 'acc_dev_best': best_dict['acc_dev_best'],
-                 'auc_dev_best': best_dict['auc_dev_best'],
-                 'loss_dev_best': best_dict['loss_dev_best'],
-                 'state_dict': model.module.state_dict()},
-                os.path.join(args.save_path,
-                             'best{}.ckpt'.format(best_dict['best_idx']))
-            )
+            torch.save({
+                'epoch': summary_train['epoch'],
+                'step': summary_train['step'],
+                'acc_dev_best': best_dict['acc_dev_best'],
+                'auc_dev_best': best_dict['auc_dev_best'],
+                'loss_dev_best': best_dict['loss_dev_best'],
+                'state_dict': model.module.state_dict()
+            }, join(args.save_path, f"best{best_dict['best_idx']}.ckpt"))
             best_dict['best_idx'] += 1
             if best_dict['best_idx'] > cfg.save_top_k:
                 best_dict['best_idx'] = 1
+
             logging.info(
                 '{}, Best, Step : {}, Loss : {}, Acc : {},'
                 'Auc :{},Best Auc : {:.3f}' .format(
@@ -461,17 +473,10 @@ def run(args):
                     'loss_dev_best': best_dict['loss_dev_best'],
                     'state_dict': model.module.state_dict()},
                    os.path.join(args.save_path, 'train.ckpt'))
+
     summary_writer.close()
 
 
-def main():
-    args = parser.parse_args()
-    if args.verbose is True:
-        print('Using the specified args:')
-        print(args)
-
-    run(args)
-
-
-if __name__ == '__main__':
-    main()
+print('Using args:')
+print(args)
+run(args)

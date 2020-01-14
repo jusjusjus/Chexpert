@@ -31,14 +31,67 @@ class Classifier(nn.Module):
         self.cfg = cfg
         self.backbone = BACKBONES[cfg.backbone](cfg)
         self.global_pool = GlobalPool(cfg)
-        self.expand = 1
         if cfg.global_pool == 'AVG_MAX':
             self.expand = 2
         elif cfg.global_pool == 'AVG_MAX_LSE':
             self.expand = 3
+        else:
+            self.expand = 1
+
         self._init_classifier()
         self._init_bn()
         self._init_attention_map()
+
+    def forward(self, x):
+        """return logits and logits map
+
+        Parameter
+        ---------
+            x: tensor of shape (N, C, H, W)"""
+
+        feat_map = self.backbone(x)
+
+        logits = []
+        logit_maps = []
+        for index, num_class in enumerate(self.cfg.num_classes):
+            if self.cfg.attention_map != "None":
+                feat_map = self.attention_map(feat_map)
+
+            classifier = self.classifier(index)
+            batchnorm = self.batchnorm(index)
+
+            # (N, num_class, H, W)
+            logit_map = None
+            if self.cfg.global_pool not in ('AVG_MAX', 'AVG_MAX_LSE'):
+                logit_map = classifier(feat_map)
+                logit_maps.append(logit_map)
+
+            # (N, num_class, H, W) -> (N, C, 1, 1)
+            feat = self.global_pool(feat_map, logit_map)
+            feat = batchnorm(feat)
+            feat = F.dropout(feat, p=self.cfg.fc_drop, training=self.training)
+
+            # (N, num_class, 1, 1)
+            logit = classifier(feat)
+
+            # (N, num_class, 1, 1) -> (N, num_class)
+            logit = logit.squeeze()
+            logits.append(logit)
+
+        return logits, logit_maps
+
+    def classifier(self, index):
+        """return classification layer for column `index`"""
+        return getattr(self, "fc_" + str(index))
+
+    def batchnorm(self, index):
+        """return batch-norm layer for column `index`
+
+        If batch norm is not computed, the method returns the identity
+        function.
+        """
+        return getattr(self, "bn_" + str(index)) if self.cfg.fc_bn \
+               else (lambda x: x)
 
     def _init_classifier(self):
         for index, num_class in enumerate(self.cfg.num_classes):
@@ -56,11 +109,9 @@ class Classifier(nn.Module):
             elif BACKBONES_TYPES[self.cfg.backbone] == 'densenet':
                 setattr(
                     self,
-                    "fc_" +
-                    str(index),
+                    "fc_" + str(index),
                     nn.Conv2d(
-                        self.backbone.num_features *
-                        self.expand,
+                        self.backbone.num_features * self.expand,
                         num_class,
                         kernel_size=1,
                         stride=1,
@@ -127,36 +178,3 @@ class Classifier(nn.Module):
 
     def cuda(self, device=None):
         return self._apply(lambda t: t.cuda(device))
-
-    def forward(self, x):
-        # (N, C, H, W)
-        feat_map = self.backbone(x)
-
-        logits = list()
-        logit_maps = list()
-        for index, num_class in enumerate(self.cfg.num_classes):
-            if self.cfg.attention_map != "None":
-                feat_map = self.attention_map(feat_map)
-
-            classifier = getattr(self, "fc_" + str(index))
-            # (N, num_class, H, W)
-            logit_map = None
-            if not (self.cfg.global_pool == 'AVG_MAX' or
-                    self.cfg.global_pool == 'AVG_MAX_LSE'):
-                logit_map = classifier(feat_map)
-                logit_maps.append(logit_map)
-            # (N, C, 1, 1)
-            feat = self.global_pool(feat_map, logit_map)
-
-            if self.cfg.fc_bn:
-                bn = getattr(self, "bn_" + str(index))
-                feat = bn(feat)
-            feat = F.dropout(feat, p=self.cfg.fc_drop, training=self.training)
-            # (N, num_class, 1, 1)
-
-            logit = classifier(feat)
-            # (N, num_class)
-            logit = logit.squeeze(-1).squeeze(-1)
-            logits.append(logit)
-
-        return (logits, logit_maps)
