@@ -223,29 +223,29 @@ def test_epoch(summary, cfg, args, model, dataloader):
     predictions = [[] for _ in range(num_tasks)]
     targets_np = [[] for _ in range(num_tasks)]
 
-    for step, (image, target) in enumerate(dataloader):
-        print(step, image.shape)
+    for step, (image, targets_th) in enumerate(dataloader):
         image = image.to(device)
-        target = target.to(device)
-        output, logit_map = model(image)
-        for c in range(num_tasks):
-            output_c = torch.sigmoid(output[c].view(-1)).cpu().detach().numpy()
-            target_c = target[:, c].view(-1).cpu().detach().numpy()
-            predictions[c].append(output_c)
-            targets_np[c].append(target_c)
+        targets_th = targets_th.to(device)
+        outputs, logit_map = model(image)
+        for t, output in enumerate(outputs):
+            output = torch.sigmoid(output.view(-1)).cpu().detach().numpy()
+            target = targets_th[:, t].view(-1).cpu().detach().numpy()
+            predictions[t].append(output)
+            targets_np[t].append(target)
 
-            loss_t, acc_t = get_loss(output, target, c, device, cfg)
-            acc_sum[c] += acc_t.item()
-            loss_sum[c] += loss_t.item()
+            loss_t, acc_t = get_loss(outputs, targets_th, t, device, cfg)
+            acc_sum[t] += acc_t.item()
+            loss_sum[t] += loss_t.item()
 
     predictions = [np.concatenate(l) for l in predictions]
     targets_np = [np.concatenate(l) for l in targets_np]
 
+    # This isn't 100% correct since the last batch can be smaller than the
+    # rest, but we don't weight according to batchsize.
+
     summary['loss'] = loss_sum / len(dataloader)
-    print(acc_sum, len(dataloader))
-    print(acc_sum / len(dataloader))
     summary['acc'] = acc_sum / len(dataloader)
-    exit(0)
+
     return summary, predictions, targets_np
 
 
