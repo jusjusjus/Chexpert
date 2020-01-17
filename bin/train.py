@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import sys
 import os
 import argparse
@@ -310,20 +312,6 @@ def run(args):
             ckpt = torch.load(args.pre_train, map_location=device)
             model.module.load_state_dict(ckpt)
     optimizer = get_optimizer(model.parameters(), cfg)
-
-    src_folder = os.path.dirname(os.path.abspath(__file__)) + '/../'
-    dst_folder = os.path.join(args.save_path, 'classification')
-    rc, size = subprocess.getstatusoutput('du --max-depth=0 %s | cut -f1'
-                                          % src_folder)
-    if rc != 0:
-        raise Exception('Copy folder error : {}'.format(rc))
-    rc, err_msg = subprocess.getstatusoutput('cp -R %s %s' % (src_folder,
-                                                              dst_folder))
-    if rc != 0:
-        raise Exception('copy folder error : {}'.format(err_msg))
-
-    copyfile(cfg.train_csv, os.path.join(args.save_path, 'train.csv'))
-    copyfile(cfg.dev_csv, os.path.join(args.save_path, 'dev.csv'))
 
     dataloader_train = DataLoader(
         ImageDataset(cfg.train_csv, cfg, mode='train'),

@@ -1,6 +1,6 @@
 {
-    "train_csv": "/Path/to/train.csv",
-    "dev_csv": "/Path/to/dev.csv",
+    "train_csv": "/data/challenges/CheXpert-v1.0/train.csv",
+    "dev_csv": "/data/challenges/CheXpert-v1.0/valid.csv",
     "backbone": "densenet121",
     "width": 512,
     "height": 512,
@@ -18,7 +18,7 @@
     "enhance_index": [2,6],
     "enhance_times": 1,
     "pos_weight": [1,1,1,1,1],
-    "train_batch_size": 56,
+    "train_batch_size": 24,
     "dev_batch_size": 56,
     "pretrained": true,
     "log_every": 10,

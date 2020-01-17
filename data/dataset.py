@@ -1,3 +1,5 @@
+
+from os.path import join, exists
 import numpy as np
 from torch.utils.data import Dataset
 import cv2
@@ -5,6 +7,7 @@ from PIL import Image
 from data.imgaug import GetTransforms
 
 np.random.seed(0)
+BASEDIR = "/data/challenges"
 
 
 class ImageDataset(Dataset):
@@ -18,16 +21,17 @@ class ImageDataset(Dataset):
                      {'1.0': '1', '': '0', '0.0': '0', '-1.0': '1'}, ]
         with open(label_path) as f:
             header = f.readline().strip('\n').split(',')
-            self._label_header = [
+            self._label_header = list(map(lambda x: x.replace(' ', '_'), [
                 header[7],
                 header[10],
                 header[11],
                 header[13],
-                header[15]]
+                header[15]]))
             for line in f:
                 labels = []
                 fields = line.strip('\n').split(',')
-                image_path = fields[0]
+                image_path = join(BASEDIR, fields[0])
+                assert exists(image_path), image_path
                 flg_enhance = False
                 for index, value in enumerate(fields[5:]):
                     if index == 5 or index == 8:
