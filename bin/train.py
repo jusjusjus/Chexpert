@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 
 import argparse
 
@@ -6,26 +7,27 @@ parser.add_argument('cfg_path', default=None, metavar='CFG_PATH', type=str,
                     help="Path to the config file in yaml format")
 parser.add_argument('save_path', default=None, metavar='SAVE_PATH', type=str,
                     help="Path to the saved models")
-parser.add_argument('--num_workers', default=8, type=int, help="Number of "
+parser.add_argument('--num_workers', default=3, type=int, help="Number of "
                     "workers for each data loader")
-parser.add_argument('--device_ids', default='0,1,2,3', type=str,
+parser.add_argument('--device_ids', default='0,1', type=str,
                     help="GPU indices ""comma separated, e.g. '0,1' ")
 parser.add_argument('--pre_train', default=None, type=str, help="If get parameters from "
                     "pretrained model")
 parser.add_argument('--resume', default=0, type=int, help="If resume from "
                     "previous run")
-parser.add_argument('--logtofile', default=False, type=bool, help="Save log "
+parser.add_argument('--logtofile', action='store_true', help="Save log "
                     "in save_path/log.txt if set True")
-parser.add_argument('--verbose', default=False, type=bool, help="Detail info")
+parser.add_argument('--verbose', action='store_true', help="Detail info")
 args = parser.parse_args()
 
+import os
+import json
+import time
+import logging
+import subprocess
 from os.path import dirname, abspath, join, exists
 from sys import path
 path.append(join(dirname(abspath(__file__)), '..'))
-import logging
-import json
-import time
-import subprocess
 from shutil import copyfile
 
 import numpy as np
@@ -86,22 +88,19 @@ def get_loss(output, target, index, device, cfg):
 
 
 def train_epoch(summary, summary_dev, cfg, args, model, dataloader,
-                dataloader_dev, optimizer, summary_writer, best_dict,
+                testloader, optimizer, summary_writer, best_dict,
                 dev_header):
     torch.set_grad_enabled(True)
     model.train()
     device_ids = list(map(int, args.device_ids.split(',')))
     device = torch.device(f"cuda:{device_ids[0]}")
-    steps = len(dataloader)
-    dataiter = iter(dataloader)
-    label_header = dataloader.dataset._label_header
+    label_header = trainloader.dataset._label_header
     num_tasks = len(cfg.num_classes)
 
     time_now = time.time()
     loss_sum = np.zeros(num_tasks)
     acc_sum = np.zeros(num_tasks)
-    for step in range(steps):
-        image, target = next(dataiter)
+    for step, (image, target) in enumerate(trainloader):
         image = image.to(device)
         target = target.to(device)
         output, logit_map = model(image)
@@ -154,7 +153,7 @@ def train_epoch(summary, summary_dev, cfg, args, model, dataloader,
         if summary['step'] % cfg.test_every == 0:
             time_now = time.time()
             summary_dev, predlist, true_list = test_epoch(
-                summary_dev, cfg, args, model, dataloader_dev)
+                summary_dev, cfg, args, model, testloader)
             time_spent = time.time() - time_now
 
             auclist = []
@@ -338,15 +337,15 @@ def run(args):
     copyfile(cfg.train_csv, join(args.save_path, 'train.csv'))
     copyfile(cfg.dev_csv, join(args.save_path, 'dev.csv'))
 
-    dataloader_train = DataLoader(
+    trainloader = DataLoader(
         ImageDataset(cfg.train_csv, cfg, mode='train'),
         batch_size=cfg.train_batch_size, num_workers=args.num_workers,
         drop_last=True, shuffle=True)
-    dataloader_dev = DataLoader(
+    testloader = DataLoader(
         ImageDataset(cfg.dev_csv, cfg, mode='dev'),
         batch_size=cfg.dev_batch_size, num_workers=args.num_workers,
         drop_last=False, shuffle=False)
-    dev_header = dataloader_dev.dataset._label_header
+    dev_header = testloader.dataset._label_header
 
     summary_train = {'epoch': 0, 'step': 0}
     summary_dev = {'loss': float('inf'), 'acc': 0.0}
@@ -377,12 +376,12 @@ def run(args):
 
         summary_train, best_dict = train_epoch(
             summary_train, summary_dev, cfg, args, model,
-            dataloader_train, dataloader_dev, optimizer,
+            trainloader, testloader, optimizer,
             summary_writer, best_dict, dev_header)
 
         time_now = time.time()
         summary_dev, predlist, true_list = test_epoch(
-            summary_dev, cfg, args, model, dataloader_dev)
+            summary_dev, cfg, args, model, testloader)
         time_spent = time.time() - time_now
 
         auclist = []

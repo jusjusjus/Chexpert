@@ -1,10 +1,16 @@
-import numpy as np
-from torch.utils.data import Dataset
+
+from os.path import join
+
 import cv2
+import numpy as np
 from PIL import Image
+from torch.utils.data import Dataset
+
 from data.imgaug import GetTransforms
 
 np.random.seed(0)
+
+BASEDIR = '/data/challenges'
 
 
 class ImageDataset(Dataset):
@@ -16,7 +22,7 @@ class ImageDataset(Dataset):
         self._mode = mode
         self.dict = [{'1.0': '1', '': '0', '0.0': '0', '-1.0': '0'},
                      {'1.0': '1', '': '0', '0.0': '0', '-1.0': '1'}, ]
-        with open(label_path) as f:
+        with open(label_path, 'r') as f:
             header = f.readline().strip('\n').split(',')
             self._label_header = [
                 header[7],
@@ -36,20 +42,22 @@ class ImageDataset(Dataset):
                                 value) == '1' and \
                                 self.cfg.enhance_index.count(index) > 0:
                             flg_enhance = True
+
                     elif index == 2 or index == 6 or index == 10:
                         labels.append(self.dict[0].get(value))
                         if self.dict[0].get(
                                 value) == '1' and \
                                 self.cfg.enhance_index.count(index) > 0:
                             flg_enhance = True
-                # labels = ([self.dict.get(n, n) for n in fields[5:]])
+
                 labels = list(map(int, labels))
-                self._image_paths.append(image_path)
+                self._image_paths.append(join(BASEDIR, image_path))
                 self._labels.append(labels)
                 if flg_enhance and self._mode == 'train':
                     for i in range(self.cfg.enhance_times):
                         self._image_paths.append(image_path)
                         self._labels.append(labels)
+
         self._num_image = len(self._image_paths)
 
     def __len__(self):
@@ -65,6 +73,7 @@ class ImageDataset(Dataset):
                  (0, self.cfg.long_side - w), (0, 0)),
                 mode='constant', constant_values=0.0
             )
+
         elif self.cfg.border_pad == 'pixel_mean':
             image = np.pad(
                 image,
@@ -72,6 +81,7 @@ class ImageDataset(Dataset):
                  (0, self.cfg.long_side - w), (0, 0)),
                 mode='constant', constant_values=self.cfg.pixel_mean
             )
+
         else:
             image = np.pad(
                 image,
@@ -89,6 +99,7 @@ class ImageDataset(Dataset):
             ratio = h * 1.0 / w
             h_ = self.cfg.long_side
             w_ = round(h_ / ratio)
+
         else:
             ratio = w * 1.0 / h
             w_ = self.cfg.long_side
@@ -106,6 +117,7 @@ class ImageDataset(Dataset):
         image = Image.fromarray(image)
         if self._mode == 'train':
             image = GetTransforms(image, type=self.cfg.use_transforms_type)
+
         image = np.array(image)
         if self.cfg.use_equalizeHist:
             image = cv2.equalizeHist(image)
