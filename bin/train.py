@@ -3,51 +3,53 @@
 import argparse
 
 parser = argparse.ArgumentParser(description='Train model')
-parser.add_argument('cfg_path', default=None, metavar='CFG_PATH', type=str,
+parser.add_argument('cfg_path', type=str, default=None,
                     help="Path to the config file in yaml format")
-parser.add_argument('save_path', default=None, metavar='SAVE_PATH', type=str,
+parser.add_argument('save_path', type=str, default=None,
                     help="Path to the saved models")
-parser.add_argument('--num_workers', default=3, type=int, help="Number of "
-                    "workers for each data loader")
-parser.add_argument('--device_ids', default='0,1', type=str,
+parser.add_argument('--num_workers', type=int, default=3,
+                    help="Number of workers for each data loader")
+parser.add_argument('--device_ids', type=str, default='0,1',
                     help="GPU indices ""comma separated, e.g. '0,1' ")
-parser.add_argument('--pre_train', default=None, type=str, help="If get parameters from "
-                    "pretrained model")
-parser.add_argument('--resume', default=0, type=int, help="If resume from "
-                    "previous run")
-parser.add_argument('--logtofile', action='store_true', help="Save log "
-                    "in save_path/log.txt if set True")
+parser.add_argument('--pre_train', type=str, default=None,
+                    help="If get parameters from pretrained model")
+parser.add_argument('--resume', type=int, default=0,
+                    help="If resume from previous run")
 parser.add_argument('--verbose', action='store_true', help="Detail info")
 args = parser.parse_args()
 
-import os
 import json
-import time
-import logging
 import subprocess
+from os import makedirs
 from os.path import dirname, abspath, join, exists
 from sys import path
 path.append(join(dirname(abspath(__file__)), '..'))
+from time import time
 from shutil import copyfile
 
 import numpy as np
-from sklearn import metrics
-from easydict import EasyDict as edict
 import torch
-from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torch.nn import DataParallel
+from torch.utils.data import DataLoader
+from sklearn import metrics
+from easydict import EasyDict as edict
 
 from tensorboardX import SummaryWriter
 
-
-torch.manual_seed(0)
-torch.cuda.manual_seed_all(0)  # type: ignore
+torch.manual_seed(42)
+torch.cuda.manual_seed_all(42)  # type: ignore
 
 from data.dataset import ImageDataset  # noqa
-from model.classifier import Classifier  # noqa
 from utils.misc import lr_schedule  # noqa
 from model.utils import get_optimizer  # noqa
+from model.classifier import Classifier  # noqa
+
+
+def tostr(l, acc=3):
+    fmt_str = "{:." + str(acc) + "f}"
+    s = ' '.join(map(lambda x: fmt_str.format(x), l))
+    return '(' + s + ')'
 
 
 def get_loss(output, target, index, device, cfg):
@@ -62,8 +64,8 @@ def get_loss(output, target, index, device, cfg):
         target:  binary ground-truth classes
         index:  column for which to compute the binary loss
         device:  device where to compute the logit
-        cfg:  configuration namespace"""
-
+        cfg:  configuration namespace
+    """
     assert cfg.criterion == 'BCE', f"Unknown criterion '{cfg.criterion}'"
     assert all(n == 1 for n in cfg.num_classes)
     target = target[:, index].view(-1)
@@ -87,17 +89,18 @@ def get_loss(output, target, index, device, cfg):
     return loss, acc
 
 
-def train_epoch(summary, summary_dev, cfg, args, model, dataloader,
-                testloader, optimizer, summary_writer, best_dict,
-                dev_header):
+def train_epoch(summary, summary_dev, cfg, args, model, trainloader,
+                testloader, optimizer, summary_writer, best_dict, dev_header):
+    """"""
     torch.set_grad_enabled(True)
     model.train()
+
     device_ids = list(map(int, args.device_ids.split(',')))
     device = torch.device(f"cuda:{device_ids[0]}")
     label_header = trainloader.dataset._label_header
     num_tasks = len(cfg.num_classes)
 
-    time_now = time.time()
+    t0 = time()
     loss_sum = np.zeros(num_tasks)
     acc_sum = np.zeros(num_tasks)
     for step, (image, target) in enumerate(trainloader):
@@ -119,81 +122,49 @@ def train_epoch(summary, summary_dev, cfg, args, model, dataloader,
         loss.backward()
         optimizer.step()
 
-        # The rest is logging.
+        # The rest is testing and logging
 
         summary['step'] += 1
 
         if summary['step'] % cfg.log_every == 0:
-            time_spent = time.time() - time_now
-            time_now = time.time()
-
             loss_sum /= cfg.log_every
             acc_sum /= cfg.log_every
-            loss_str = ' '.join(map(lambda x: '{:.5f}'.format(x), loss_sum))
-            acc_str = ' '.join(map(lambda x: '{:.3f}'.format(x), acc_sum))
 
-            logging.info(
-                '{}, Train, Epoch : {}, Step : {}, Loss : {}, '
-                'Acc : {}, Run Time : {:.2f} sec'
-                .format(time.strftime("%Y-%m-%d %H:%M:%S"),
-                        summary['epoch'] + 1, summary['step'], loss_str,
-                        acc_str, time_spent))
+            print(f"TRAIN (step {summary['step']}) > Loss: {tostr(loss_sum)},"
+                    f" Acc: {tostr(acc_sum)}, {time() - t0:.2f} sec.")
 
-            for t in range(num_tasks):
-                summary_writer.add_scalar(
-                    'train/loss_{}'.format(label_header[t]), loss_sum[t],
-                    summary['step'])
-                summary_writer.add_scalar(
-                    'train/acc_{}'.format(label_header[t]), acc_sum[t],
-                    summary['step'])
+            step = summary['step']
+            for label, loss, acc in zip(label_header, loss_sum, acc_sum):
+                summary_writer.add_scalar("train/loss_" + label, loss, step)
+                summary_writer.add_scalar("train/acc_" + label, acc, step)
 
             loss_sum = np.zeros(num_tasks)
             acc_sum = np.zeros(num_tasks)
 
         if summary['step'] % cfg.test_every == 0:
-            time_now = time.time()
+            t0 = time()
             summary_dev, predlist, true_list = test_epoch(
                 summary_dev, cfg, args, model, testloader)
-            time_spent = time.time() - time_now
-
             auclist = []
-            for i in range(len(cfg.num_classes)):
-                y_pred = predlist[i]
-                y_true = true_list[i]
-                fpr, tpr, thresholds = metrics.roc_curve(
-                    y_true, y_pred, pos_label=1)
-                auc = metrics.auc(fpr, tpr)
-                auclist.append(auc)
+            for y_pred, y_true in zip(predlist, true_list):
+                fpr, tpr, _ = metrics.roc_curve(y_true, y_pred, pos_label=1)
+                auclist.append(metrics.auc(fpr, tpr))
+
             summary_dev['auc'] = np.array(auclist)
 
-            loss_dev_str = ' '.join(map(lambda x: '{:.5f}'.format(x),
-                                        summary_dev['loss']))
-            acc_dev_str = ' '.join(map(lambda x: '{:.3f}'.format(x),
-                                       summary_dev['acc']))
-            auc_dev_str = ' '.join(map(lambda x: '{:.3f}'.format(x),
-                                       summary_dev['auc']))
+            loss_dev_str = tostr(summary_dev['loss'])
+            acc_dev_str = tostr(summary_dev['acc'])
+            auc_dev_str = tostr(summary_dev['auc'])
+            print(f"TEST  (step {summary['step']}) > Loss: {loss_dev_str}, "
+                  f"Acc: {acc_dev_str}, Auc: {auc_dev_str}, "
+                  f"Mean auc: {summary_dev['auc'].mean():.3f}, {time() - t0:.2f} sec.")
 
-            logging.info(
-                '{}, Dev, Step : {}, Loss : {}, Acc : {}, Auc : {},'
-                'Mean auc: {:.3f} ''Run Time : {:.2f} sec' .format(
-                    time.strftime("%Y-%m-%d %H:%M:%S"),
-                    summary['step'],
-                    loss_dev_str,
-                    acc_dev_str,
-                    auc_dev_str,
-                    summary_dev['auc'].mean(),
-                    time_spent))
-
-            for t in range(len(cfg.num_classes)):
-                summary_writer.add_scalar(
-                    'dev/loss_{}'.format(dev_header[t]),
-                    summary_dev['loss'][t], summary['step'])
-                summary_writer.add_scalar(
-                    'dev/acc_{}'.format(dev_header[t]), summary_dev['acc'][t],
-                    summary['step'])
-                summary_writer.add_scalar(
-                    'dev/auc_{}'.format(dev_header[t]), summary_dev['auc'][t],
-                    summary['step'])
+            step = summary['step']
+            for label, loss, acc, auc in zip(dev_header, summary_dev['loss'],
+                                     summary_dev['acc'], summary_dev['auc']):
+                summary_writer.add_scalar('val/loss_' + label, loss, step)
+                summary_writer.add_scalar('val/acc_' + label, acc, step)
+                summary_writer.add_scalar('val/auc_' + label, auc, step)
 
             save_best = False
             mean_acc = summary_dev['acc'][cfg.save_index].mean()
@@ -215,267 +186,236 @@ def train_epoch(summary, summary_dev, cfg, args, model, dataloader,
                     save_best = True
 
             if save_best:
-                torch.save(
-                    {'epoch': summary['epoch'],
+                torch.save({
+                    'epoch': summary['epoch'],
                      'step': summary['step'],
                      'acc_dev_best': best_dict['acc_dev_best'],
                      'auc_dev_best': best_dict['auc_dev_best'],
                      'loss_dev_best': best_dict['loss_dev_best'],
-                     'state_dict': model.module.state_dict()},
-                    join(args.save_path, 'best{}.ckpt'.format(
-                        best_dict['best_idx']))
-                )
+                     'state_dict': model.module.state_dict()
+                 }, join(args.save_path, f"best_{best_dict['best_idx']}.ckpt"))
+                print(f"BEST  (step {summary['step']}) > Loss: {loss_dev_str}, "
+                    f"Acc: {acc_dev_str}, Auc: {auc_dev_str}, "
+                    f"Best auc: {best_dict['auc_dev_best']:.3f}")
                 best_dict['best_idx'] += 1
                 if best_dict['best_idx'] > cfg.save_top_k:
                     best_dict['best_idx'] = 1
-                logging.info(
-                    '{}, Best, Step : {}, Loss : {}, Acc : {},Auc :{},'
-                    'Best Auc : {:.3f}' .format(
-                        time.strftime("%Y-%m-%d %H:%M:%S"),
-                        summary['step'],
-                        loss_dev_str,
-                        acc_dev_str,
-                        auc_dev_str,
-                        best_dict['auc_dev_best']))
+
         model.train()
         torch.set_grad_enabled(True)
+
     summary['epoch'] += 1
 
     return summary, best_dict
 
 
 def test_epoch(summary, cfg, args, model, dataloader):
+    """"""
     torch.set_grad_enabled(False)
     model.eval()
-    device_ids = list(map(int, args.device_ids.split(',')))
-    device = torch.device('cuda:{}'.format(device_ids[0]))
-    steps = len(dataloader)
-    dataiter = iter(dataloader)
-    num_tasks = len(cfg.num_classes)
 
+    device_ids = list(map(int, args.device_ids.split(',')))
+    device = torch.device(f"cuda:{device_ids[0]}")
+
+    num_tasks = len(cfg.num_classes)
     loss_sum = np.zeros(num_tasks)
     acc_sum = np.zeros(num_tasks)
+    predictions = [[] for _ in range(num_tasks)]
+    targets_np = [[] for _ in range(num_tasks)]
 
-    predlist = list(x for x in range(len(cfg.num_classes)))
-    true_list = list(x for x in range(len(cfg.num_classes)))
-    for step in range(steps):
-        image, target = next(dataiter)
+    for step, (image, target) in enumerate(dataloader):
+        print(step, image.shape)
         image = image.to(device)
         target = target.to(device)
         output, logit_map = model(image)
-        # different number of tasks
-        for t in range(len(cfg.num_classes)):
+        for c in range(num_tasks):
+            output_c = torch.sigmoid(output[c].view(-1)).cpu().detach().numpy()
+            target_c = target[:, c].view(-1).cpu().detach().numpy()
+            predictions[c].append(output_c)
+            targets_np[c].append(target_c)
 
-            loss_t, acc_t = get_loss(output, target, t, device, cfg)
-            # AUC
-            output_tensor = torch.sigmoid(
-                output[t].view(-1)).cpu().detach().numpy()
-            target_tensor = target[:, t].view(-1).cpu().detach().numpy()
-            if step == 0:
-                predlist[t] = output_tensor
-                true_list[t] = target_tensor
-            else:
-                predlist[t] = np.append(predlist[t], output_tensor)
-                true_list[t] = np.append(true_list[t], target_tensor)
+            loss_t, acc_t = get_loss(output, target, c, device, cfg)
+            acc_sum[c] += acc_t.item()
+            loss_sum[c] += loss_t.item()
 
-            loss_sum[t] += loss_t.item()
-            acc_sum[t] += acc_t.item()
-    summary['loss'] = loss_sum / steps
-    summary['acc'] = acc_sum / steps
+    predictions = [np.concatenate(l) for l in predictions]
+    targets_np = [np.concatenate(l) for l in targets_np]
 
-    return summary, predlist, true_list
+    summary['loss'] = loss_sum / len(dataloader)
+    print(acc_sum, len(dataloader))
+    print(acc_sum / len(dataloader))
+    summary['acc'] = acc_sum / len(dataloader)
+    exit(0)
+    return summary, predictions, targets_np
 
 
-def run(args):
-    with open(args.cfg_path) as f:
-        cfg = edict(json.load(f))
-        if args.verbose is True:
-            print(json.dumps(cfg, indent=4))
-
-    os.makedirs(args.save_path, exist_ok=True)
-    if args.logtofile:
-        logging.basicConfig(filename=join(args.save_path, 'log.txt'),
-                            filemode="w", level=logging.INFO)
-    else:
-        logging.basicConfig(level=logging.INFO)
-
-    if not args.resume:
-        with open(join(args.save_path, 'cfg.json'), 'w') as f:
-            json.dump(cfg, f, indent=1)
-
-    device_ids = list(map(int, args.device_ids.split(',')))
-    num_devices = torch.cuda.device_count()
-    assert num_devices >= len(device_ids), f"""
-    #available gpu : {num_devices} < --device_ids : {len(device_ids)}"""
-
-    device = torch.device(f"cuda:{device_ids[0]}")
-
-    model = Classifier(cfg)
-    if args.verbose:
-        from torchsummary import summary
-        h, w = (cfg.long_side, cfg.long_side) if cfg.fix_ratio \
-               else (cfg.height, cfg.width)
-        summary(model.to(device), (3, h, w))
-
-    model = DataParallel(model, device_ids=device_ids).to(device).train()
-    if args.pre_train is not None:
-        if exists(args.pre_train):
-            ckpt = torch.load(args.pre_train, map_location=device)
-            model.module.load_state_dict(ckpt)
-
-    optimizer = get_optimizer(model.parameters(), cfg)
-
-    src_folder = join(dirname(abspath(__file__)), '..')
-    dst_folder = join(args.save_path, 'classification')
-    rc, size = subprocess.getstatusoutput('du --max-depth=0 %s | cut -f1'
-                                          % src_folder)
-    assert rc == 0, f"Copy folder error : {rc}"
-    rc, err_msg = subprocess.getstatusoutput('cp -R %s %s' % (src_folder,
-                                                              dst_folder))
-    assert rc == 0, f"copy folder error : {err_msg}"
-
-    copyfile(cfg.train_csv, join(args.save_path, 'train.csv'))
-    copyfile(cfg.dev_csv, join(args.save_path, 'dev.csv'))
-
-    trainloader = DataLoader(
-        ImageDataset(cfg.train_csv, cfg, mode='train'),
-        batch_size=cfg.train_batch_size, num_workers=args.num_workers,
-        drop_last=True, shuffle=True)
-    testloader = DataLoader(
-        ImageDataset(cfg.dev_csv, cfg, mode='dev'),
-        batch_size=cfg.dev_batch_size, num_workers=args.num_workers,
-        drop_last=False, shuffle=False)
-    dev_header = testloader.dataset._label_header
-
-    summary_train = {'epoch': 0, 'step': 0}
-    summary_dev = {'loss': float('inf'), 'acc': 0.0}
-    summary_writer = SummaryWriter(args.save_path)
-    epoch_start = 0
-    best_dict = {
-        "acc_dev_best": 0.0,
-        "auc_dev_best": 0.0,
-        "loss_dev_best": float('inf'),
-        "fused_dev_best": 0.0,
-        "best_idx": 1
-    }
-    if args.resume:
-        ckpt_path = join(args.save_path, 'train.ckpt')
-        ckpt = torch.load(ckpt_path, map_location=device)
-        model.module.load_state_dict(ckpt['state_dict'])
-        summary_train = {'epoch': ckpt['epoch'], 'step': ckpt['step']}
-        best_dict['acc_dev_best'] = ckpt['acc_dev_best']
-        best_dict['loss_dev_best'] = ckpt['loss_dev_best']
-        best_dict['auc_dev_best'] = ckpt['auc_dev_best']
-        epoch_start = ckpt['epoch']
-
-    for epoch in range(epoch_start, cfg.epoch):
-        lr = lr_schedule(cfg.lr, cfg.lr_factor, summary_train['epoch'],
-                         cfg.lr_epochs)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-
-        summary_train, best_dict = train_epoch(
-            summary_train, summary_dev, cfg, args, model,
-            trainloader, testloader, optimizer,
-            summary_writer, best_dict, dev_header)
-
-        time_now = time.time()
-        summary_dev, predlist, true_list = test_epoch(
-            summary_dev, cfg, args, model, testloader)
-        time_spent = time.time() - time_now
-
-        auclist = []
-        for i in range(len(cfg.num_classes)):
-            y_pred = predlist[i]
-            y_true = true_list[i]
-            fpr, tpr, thresholds = metrics.roc_curve(
-                y_true, y_pred, pos_label=1)
-            auc = metrics.auc(fpr, tpr)
-            auclist.append(auc)
-        summary_dev['auc'] = np.array(auclist)
-
-        loss_dev_str = ' '.join(map(lambda x: '{:.5f}'.format(x),
-                                    summary_dev['loss']))
-        acc_dev_str = ' '.join(map(lambda x: '{:.3f}'.format(x),
-                                   summary_dev['acc']))
-        auc_dev_str = ' '.join(map(lambda x: '{:.3f}'.format(x),
-                                   summary_dev['auc']))
-
-        logging.info(
-            '{}, Dev, Step : {}, Loss : {}, Acc : {}, Auc : {},'
-            'Mean auc: {:.3f} ''Run Time : {:.2f} sec' .format(
-                time.strftime("%Y-%m-%d %H:%M:%S"),
-                summary_train['step'],
-                loss_dev_str,
-                acc_dev_str,
-                auc_dev_str,
-                summary_dev['auc'].mean(),
-                time_spent))
-
-        for t in range(len(cfg.num_classes)):
-            summary_writer.add_scalar(
-                'dev/loss_{}'.format(dev_header[t]), summary_dev['loss'][t],
-                summary_train['step'])
-            summary_writer.add_scalar(
-                'dev/acc_{}'.format(dev_header[t]), summary_dev['acc'][t],
-                summary_train['step'])
-            summary_writer.add_scalar(
-                'dev/auc_{}'.format(dev_header[t]), summary_dev['auc'][t],
-                summary_train['step'])
-
-        save_best = False
-
-        mean_acc = summary_dev['acc'][cfg.save_index].mean()
-        if mean_acc >= best_dict['acc_dev_best']:
-            best_dict['acc_dev_best'] = mean_acc
-            if cfg.best_target == 'acc':
-                save_best = True
-
-        mean_auc = summary_dev['auc'][cfg.save_index].mean()
-        if mean_auc >= best_dict['auc_dev_best']:
-            best_dict['auc_dev_best'] = mean_auc
-            if cfg.best_target == 'auc':
-                save_best = True
-
-        mean_loss = summary_dev['loss'][cfg.save_index].mean()
-        if mean_loss <= best_dict['loss_dev_best']:
-            best_dict['loss_dev_best'] = mean_loss
-            if cfg.best_target == 'loss':
-                save_best = True
-
-        if save_best:
-            torch.save({
-                'epoch': summary_train['epoch'],
-                'step': summary_train['step'],
-                'acc_dev_best': best_dict['acc_dev_best'],
-                'auc_dev_best': best_dict['auc_dev_best'],
-                'loss_dev_best': best_dict['loss_dev_best'],
-                'state_dict': model.module.state_dict()
-            }, join(args.save_path, f"best{best_dict['best_idx']}.ckpt"))
-            best_dict['best_idx'] += 1
-            if best_dict['best_idx'] > cfg.save_top_k:
-                best_dict['best_idx'] = 1
-
-            logging.info(
-                '{}, Best, Step : {}, Loss : {}, Acc : {},'
-                'Auc :{},Best Auc : {:.3f}' .format(
-                    time.strftime("%Y-%m-%d %H:%M:%S"),
-                    summary_train['step'],
-                    loss_dev_str,
-                    acc_dev_str,
-                    auc_dev_str,
-                    best_dict['auc_dev_best']))
-        torch.save({'epoch': summary_train['epoch'],
-                    'step': summary_train['step'],
-                    'acc_dev_best': best_dict['acc_dev_best'],
-                    'auc_dev_best': best_dict['auc_dev_best'],
-                    'loss_dev_best': best_dict['loss_dev_best'],
-                    'state_dict': model.module.state_dict()},
-                   os.path.join(args.save_path, 'train.ckpt'))
-
-    summary_writer.close()
-
+# Beginning of the script
 
 print('Using args:')
 print(args)
-run(args)
+
+makedirs(args.save_path, exist_ok=True)
+with open(args.cfg_path, 'r') as f:
+    cfg = edict(json.load(f))
+    if args.verbose is True:
+        print(json.dumps(cfg, indent=4))
+
+if not args.resume:
+    with open(join(args.save_path, 'cfg.json'), 'w') as f:
+        json.dump(cfg, f, indent=1)
+
+device_ids = list(map(int, args.device_ids.split(',')))
+num_devices = torch.cuda.device_count()
+assert num_devices >= len(device_ids), f"""
+#available gpu : {num_devices} < --device_ids : {len(device_ids)}"""
+
+device = torch.device(f"cuda:{device_ids[0]}")
+
+model = Classifier(cfg)
+if args.verbose:
+    from torchsummary import summary
+    h, w = (cfg.long_side, cfg.long_side) if cfg.fix_ratio \
+           else (cfg.height, cfg.width)
+    summary(model.to(device), (3, h, w))
+
+model = DataParallel(model, device_ids=device_ids).to(device)
+if args.pre_train is not None:
+    if exists(args.pre_train):
+        ckpt = torch.load(args.pre_train, map_location=device)
+        model.module.load_state_dict(ckpt)
+
+optimizer = get_optimizer(model.parameters(), cfg)
+
+trainloader = DataLoader(
+    ImageDataset(cfg.train_csv, cfg, mode='train'),
+    batch_size=cfg.train_batch_size, num_workers=args.num_workers,
+    drop_last=True, shuffle=True)
+testloader = DataLoader(
+    ImageDataset(cfg.dev_csv, cfg, mode='val'),
+    batch_size=cfg.dev_batch_size, num_workers=args.num_workers,
+    drop_last=False, shuffle=False)
+dev_header = testloader.dataset._label_header
+
+# Initialize parameters to log training output
+
+summary_train = {'epoch': 0, 'step': 0}
+summary_dev = {'loss': float('inf'), 'acc': 0.0}
+summary_writer = SummaryWriter(args.save_path)
+epoch_start = 0
+best_dict = {
+    "acc_dev_best": 0.0,
+    "auc_dev_best": 0.0,
+    "loss_dev_best": float('inf'),
+    "fused_dev_best": 0.0,
+    "best_idx": 1
+}
+
+# Load checkpoint to resume from
+
+if args.resume:
+    ckpt_path = join(args.save_path, 'train.ckpt')
+    ckpt = torch.load(ckpt_path, map_location=device)
+    model.module.load_state_dict(ckpt['state_dict'])
+    summary_train = {'epoch': ckpt['epoch'], 'step': ckpt['step']}
+    best_dict['acc_dev_best'] = ckpt['acc_dev_best']
+    best_dict['loss_dev_best'] = ckpt['loss_dev_best']
+    best_dict['auc_dev_best'] = ckpt['auc_dev_best']
+    epoch_start = ckpt['epoch']
+
+for epoch in range(epoch_start, cfg.epoch):
+    print(f"Training in epoch {summary_train['epoch'] + 1}")
+
+    # Update learning rate from Schedule.  Here we use a schedule that decays
+    # the learning rate with a power of `cfg.lr_factor`.
+
+    lr = lr_schedule(cfg.lr, cfg.lr_factor, summary_train['epoch'],
+                     cfg.lr_epochs)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+    # Train the model for on all minibatches in `trainloader`.  During the
+    # training, the model is evaluated every `cfg.test_every` steps.
+
+    summary_train, best_dict = train_epoch(
+        summary_train, summary_dev, cfg, args, model,
+        trainloader, testloader, optimizer,
+        summary_writer, best_dict, dev_header)
+
+    # Test the model on all minibatches of the testloader.
+
+    t0 = time()
+    summary_dev, predlist, true_list = test_epoch(
+        summary_dev, cfg, args, model, testloader)
+
+    # Using the test output, compute AUC statistics for each class, as well as
+    # its mean across classes.
+
+    auclist = []
+    for y_pred, y_true in zip(predlist, true_list):
+        fpr, tpr, _ = metrics.roc_curve(y_true, y_pred, pos_label=1)
+        auclist.append(metrics.auc(fpr, tpr))
+
+    summary_dev['auc'] = np.array(auclist)
+
+    loss_dev_str = tostr(summary_dev['loss'], 5)
+    acc_dev_str = tostr(summary_dev['acc'])
+    auc_dev_str = tostr(summary_dev['auc'])
+    print(f"VAL > Step: {summary_train['train']}, Loss: {loss_dev_str}, "
+            f"Acc: {acc_dev_str}, Auc: {auc_dev_str}, "
+            f"Mean auc: {summary_dev['auc'].mean():.3f}, {time() - t0:.2f} sec.")
+
+    step = summary_train['step']
+    for label, loss, acc, auc in zip(dev_header, summary_dev['loss'],
+                                 summary_dev['acc'], summary_dev['auc']):
+        summary_writer.add_scalar( 'val/loss_' + label, loss, step)
+        summary_writer.add_scalar( 'val/acc_' + label, acc, step)
+        summary_writer.add_scalar( 'val/auc_' + label, auc, step)
+
+    # If testing reveals that the current model performs best in either acc,
+    # auc, or loss, save the model as the new best model.
+
+    save_best = False
+    mean_acc = summary_dev['acc'][cfg.save_index].mean()
+    if mean_acc >= best_dict['acc_dev_best']:
+        best_dict['acc_dev_best'] = mean_acc
+        if cfg.best_target == 'acc':
+            save_best = True
+
+    mean_auc = summary_dev['auc'][cfg.save_index].mean()
+    if mean_auc >= best_dict['auc_dev_best']:
+        best_dict['auc_dev_best'] = mean_auc
+        if cfg.best_target == 'auc':
+            save_best = True
+
+    mean_loss = summary_dev['loss'][cfg.save_index].mean()
+    if mean_loss <= best_dict['loss_dev_best']:
+        best_dict['loss_dev_best'] = mean_loss
+        if cfg.best_target == 'loss':
+            save_best = True
+
+    if save_best:
+        torch.save({
+            'epoch': summary_train['epoch'],
+            'step': summary_train['step'],
+            'acc_dev_best': best_dict['acc_dev_best'],
+            'auc_dev_best': best_dict['auc_dev_best'],
+            'loss_dev_best': best_dict['loss_dev_best'],
+            'state_dict': model.module.state_dict()
+        }, join(args.save_path, f"best_{best_dict['best_idx']}.ckpt"))
+        print(f"Best, Step: {summary_train['step']}, Loss : {loss_dev_str}, "
+                f"Acc : {acc_dev_str}, Auc :{auc_dev_str}, "
+                f"Best Auc: {best_dict['auc_dev_best']:.3f}")
+        best_dict['best_idx'] += 1
+        if best_dict['best_idx'] > cfg.save_top_k:
+            best_dict['best_idx'] = 1
+
+    torch.save({
+        'epoch': summary_train['epoch'],
+        'step': summary_train['step'],
+        'acc_dev_best': best_dict['acc_dev_best'],
+        'auc_dev_best': best_dict['auc_dev_best'],
+        'loss_dev_best': best_dict['loss_dev_best'],
+        'state_dict': model.module.state_dict()
+    }, join(args.save_path, 'train.ckpt'))
+
+summary_writer.close()

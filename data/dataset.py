@@ -1,5 +1,5 @@
 
-from os.path import join
+from os.path import join, exists
 
 import cv2
 import numpy as np
@@ -24,16 +24,14 @@ class ImageDataset(Dataset):
                      {'1.0': '1', '': '0', '0.0': '0', '-1.0': '1'}, ]
         with open(label_path, 'r') as f:
             header = f.readline().strip('\n').split(',')
-            self._label_header = [
-                header[7],
-                header[10],
-                header[11],
-                header[13],
-                header[15]]
+            self._label_header = [l.replace(' ', '_')
+                for l in (header[7], header[10], header[11],
+                          header[13], header[15])]
             for line in f:
                 labels = []
                 fields = line.strip('\n').split(',')
-                image_path = fields[0]
+                image_path = join(BASEDIR, fields[0])
+                assert exists(image_path), image_path
                 flg_enhance = False
                 for index, value in enumerate(fields[5:]):
                     if index == 5 or index == 8:
@@ -51,7 +49,7 @@ class ImageDataset(Dataset):
                             flg_enhance = True
 
                 labels = list(map(int, labels))
-                self._image_paths.append(join(BASEDIR, image_path))
+                self._image_paths.append(image_path)
                 self._labels.append(labels)
                 if flg_enhance and self._mode == 'train':
                     for i in range(self.cfg.enhance_times):
@@ -146,7 +144,7 @@ class ImageDataset(Dataset):
 
         path = self._image_paths[idx]
 
-        if self._mode == 'train' or self._mode == 'dev':
+        if self._mode == 'train' or self._mode == 'val':
             return (image, labels)
         elif self._mode == 'test':
             return (image, path)
