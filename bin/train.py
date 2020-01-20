@@ -1,33 +1,33 @@
 #!/usr/bin/env python
 
-import sys
 import os
-import argparse
-import logging
+from os.path import dirname, abspath
+from sys import path
+path.append(dirname(abspath(__file__)) + '..')
 import json
 import time
+import logging
+import argparse
 import subprocess
 from shutil import copyfile
 
 import numpy as np
-from sklearn import metrics
-from easydict import EasyDict as edict
 import torch
-from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torch.nn import DataParallel
-
+from torch.utils.data import DataLoader
+from sklearn import metrics
+from easydict import EasyDict as edict
 from tensorboardX import SummaryWriter
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)) + '/../')
 
 torch.manual_seed(0)
 torch.cuda.manual_seed_all(0)
 
 from data.dataset import ImageDataset  # noqa
-from model.classifier import Classifier  # noqa
 from utils.misc import lr_schedule  # noqa
 from model.utils import get_optimizer  # noqa
+from model.classifier import Classifier  # noqa
+
 
 parser = argparse.ArgumentParser(description='Train model')
 parser.add_argument('cfg_path', default=None, metavar='CFG_PATH', type=str,
@@ -172,13 +172,13 @@ def train_epoch(summary, summary_dev, cfg, args, model, dataloader,
 
             for t in range(len(cfg.num_classes)):
                 summary_writer.add_scalar(
-                    'dev/loss_{}'.format(dev_header[t]),
+                    'val/loss_{}'.format(dev_header[t]),
                     summary_dev['loss'][t], summary['step'])
                 summary_writer.add_scalar(
-                    'dev/acc_{}'.format(dev_header[t]), summary_dev['acc'][t],
+                    'val/acc_{}'.format(dev_header[t]), summary_dev['acc'][t],
                     summary['step'])
                 summary_writer.add_scalar(
-                    'dev/auc_{}'.format(dev_header[t]), summary_dev['auc'][t],
+                    'val/auc_{}'.format(dev_header[t]), summary_dev['auc'][t],
                     summary['step'])
 
             save_best = False
@@ -390,13 +390,13 @@ def run(args):
 
         for t in range(len(cfg.num_classes)):
             summary_writer.add_scalar(
-                'dev/loss_{}'.format(dev_header[t]), summary_dev['loss'][t],
+                'val/loss_{}'.format(dev_header[t]), summary_dev['loss'][t],
                 summary_train['step'])
             summary_writer.add_scalar(
-                'dev/acc_{}'.format(dev_header[t]), summary_dev['acc'][t],
+                'val/acc_{}'.format(dev_header[t]), summary_dev['acc'][t],
                 summary_train['step'])
             summary_writer.add_scalar(
-                'dev/auc_{}'.format(dev_header[t]), summary_dev['auc'][t],
+                'val/auc_{}'.format(dev_header[t]), summary_dev['auc'][t],
                 summary_train['step'])
 
         save_best = False
