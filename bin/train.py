@@ -360,7 +360,7 @@ for epoch in range(epoch_start, cfg.epoch):
     loss_dev_str = tostr(summary_dev['loss'], 5)
     acc_dev_str = tostr(summary_dev['acc'])
     auc_dev_str = tostr(summary_dev['auc'])
-    print(f"VAL > Step: {summary_train['train']}, Loss: {loss_dev_str}, "
+    print(f"VAL > Step: {summary_train['step']}, Loss: {loss_dev_str}, "
             f"Acc: {acc_dev_str}, Auc: {auc_dev_str}, "
             f"Mean auc: {summary_dev['auc'].mean():.3f}, {time() - t0:.2f} sec.")
 
