@@ -104,12 +104,16 @@ def train_epoch(summary, summary_dev, cfg, args, model, trainloader,
     loss_sum = np.zeros(num_tasks)
     acc_sum = np.zeros(num_tasks)
     for step, (image, target) in enumerate(trainloader):
+
+        # step is the step within this epoch, whereas `summary['step']` gives
+        # us the global step of the algorithm
+
         image = image.to(device)
         target = target.to(device)
         output, logit_map = model(image)
 
-        # Training step.  Note that each class is implicitely weighted using
-        # the array, `cfg.pos_weight`.
+        # Train network on batch.  Note that each class is implicitely weighted
+        # using the array, `cfg.pos_weight`.
 
         loss = 0
         for t in range(num_tasks):
@@ -126,22 +130,23 @@ def train_epoch(summary, summary_dev, cfg, args, model, trainloader,
 
         summary['step'] += 1
 
-        if summary['step'] % cfg.log_every == 0:
+        if (step + 1) % cfg.log_every == 0:
             loss_sum /= cfg.log_every
             acc_sum /= cfg.log_every
 
             print(f"TRAIN (step {summary['step']}) > Loss: {tostr(loss_sum)},"
                     f" Acc: {tostr(acc_sum)}, {time() - t0:.2f} sec.")
 
-            step = summary['step']
+            # global step
+            gs = summary['step']
             for label, loss, acc in zip(label_header, loss_sum, acc_sum):
-                summary_writer.add_scalar("train/loss_" + label, loss, step)
-                summary_writer.add_scalar("train/acc_" + label, acc, step)
+                summary_writer.add_scalar("train/loss_" + label, loss, gs)
+                summary_writer.add_scalar("train/acc_" + label, acc, gs)
 
             loss_sum = np.zeros(num_tasks)
             acc_sum = np.zeros(num_tasks)
 
-        if summary['step'] % cfg.test_every == 0:
+        if (step + 1) % cfg.test_every == 0:
             t0 = time()
             summary_dev, predlist, true_list = test_epoch(
                 summary_dev, cfg, args, model, testloader)
@@ -159,12 +164,13 @@ def train_epoch(summary, summary_dev, cfg, args, model, trainloader,
                   f"Acc: {acc_dev_str}, Auc: {auc_dev_str}, "
                   f"Mean auc: {summary_dev['auc'].mean():.3f}, {time() - t0:.2f} sec.")
 
-            step = summary['step']
+            # global step
+            gs = summary['step']
             for label, loss, acc, auc in zip(dev_header, summary_dev['loss'],
                                      summary_dev['acc'], summary_dev['auc']):
-                summary_writer.add_scalar('val/loss_' + label, loss, step)
-                summary_writer.add_scalar('val/acc_' + label, acc, step)
-                summary_writer.add_scalar('val/auc_' + label, auc, step)
+                summary_writer.add_scalar('val/loss_' + label, loss, gs)
+                summary_writer.add_scalar('val/acc_' + label, acc, gs)
+                summary_writer.add_scalar('val/auc_' + label, auc, gs)
 
             save_best = False
             mean_acc = summary_dev['acc'][cfg.save_index].mean()
