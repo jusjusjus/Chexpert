@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
-from data.imgaug import GetTransforms
+from .augmentation import get_transforms
 
 np.random.seed(0)
 
@@ -60,8 +60,9 @@ def parse_csv(filename, cfg, mode):
 
     return _label_header, _image_paths, _labels
 
-# This would be a much faster implementation using pandas.
-#
+# This would be a much faster implementation using pandas.  The code is not
+# finished in it's current form.
+
 # import pandas as pd
 #
 # def parse_csv(filename, cfg, mode):
@@ -121,8 +122,8 @@ class ImageDataset(Dataset):
         return image
 
     def _fix_ratio(self, image):
+        """return resized image while keeping ratio fixed"""
         h, w, c = image.shape
-
         if h >= w:
             ratio = h * 1.0 / w
             h_ = self.cfg.long_side
@@ -135,16 +136,14 @@ class ImageDataset(Dataset):
 
         image = cv2.resize(image, dsize=(w_, h_),
                            interpolation=cv2.INTER_LINEAR)
-
         image = self._border_pad(image)
-
         return image
 
     def __getitem__(self, idx):
         image = cv2.imread(self._image_paths[idx], 0)
         image = Image.fromarray(image)
         if self._mode == 'train':
-            image = GetTransforms(image, type=self.cfg.use_transforms_type)
+            image = get_transforms(image, ttype=self.cfg.use_transforms_type)
 
         image = np.array(image)
         if self.cfg.use_equalizeHist:
@@ -162,23 +161,26 @@ class ImageDataset(Dataset):
             image = cv2.GaussianBlur(image, (self.cfg.gaussian_blur,
                                              self.cfg.gaussian_blur), 0)
 
-        # normalization
+        # Normalization.  vgg and resnet do not use pixel_std, densenet and
+        # inception use.
+
         image -= self.cfg.pixel_mean
-        # vgg and resnet do not use pixel_std, densenet and inception use.
         if self.cfg.use_pixel_std:
             image /= self.cfg.pixel_std
-        # normal image tensor :  H x W x C
-        # torch image tensor :   C X H X W
+
+        # normal image tensor : H x W x C
+        # torch image tensor  : C x H x W
+
         image = image.transpose((2, 0, 1))
         labels = np.array(self._labels[idx]).astype(np.float32)
 
         path = self._image_paths[idx]
 
-        if self._mode == 'train' or self._mode == 'val':
-            return (image, labels)
+        if self._mode in ('train', 'val'):
+            return image, labels
         elif self._mode == 'test':
-            return (image, path)
+            return image, path
         elif self._mode == 'heatmap':
-            return (image, path, labels)
+            return image, path, labels
         else:
-            raise Exception('Unknown mode : {}'.format(self._mode))
+            raise ValueError(f"Unknown mode : '{self._mode}'")
