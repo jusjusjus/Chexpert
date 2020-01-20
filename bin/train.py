@@ -286,14 +286,14 @@ if args.pre_train is not None:
 
 optimizer = get_optimizer(model.parameters(), cfg)
 
-trainloader = DataLoader(
-    ImageDataset(cfg.train_csv, cfg, mode='train'),
-    batch_size=cfg.train_batch_size, num_workers=args.num_workers,
-    drop_last=True, shuffle=True)
-testloader = DataLoader(
-    ImageDataset(cfg.dev_csv, cfg, mode='val'),
-    batch_size=cfg.dev_batch_size, num_workers=args.num_workers,
-    drop_last=False, shuffle=False)
+trainset = ImageDataset(cfg.train_csv, cfg, mode='train')
+testset = ImageDataset(cfg.dev_csv, cfg, mode='val')
+
+trainloader = DataLoader(trainset, batch_size=cfg.train_batch_size,
+    num_workers=args.num_workers, drop_last=True, shuffle=True)
+testloader = DataLoader(testset, batch_size=cfg.dev_batch_size,
+    num_workers=args.num_workers, drop_last=False, shuffle=False)
+
 dev_header = testloader.dataset._label_header
 
 # Initialize parameters to log training output

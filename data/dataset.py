@@ -12,50 +12,80 @@ np.random.seed(0)
 
 BASEDIR = '/data/challenges'
 
+def parse_csv(filename, cfg, mode):
+    label_map = {
+        2: {'1.0': '1', '': '0', '0.0': '0', '-1.0': '0'},
+        6: {'1.0': '1', '': '0', '0.0': '0', '-1.0': '0'},
+        10: {'1.0': '1', '': '0', '0.0': '0', '-1.0': '0'},
+        5: {'1.0': '1', '': '0', '0.0': '0', '-1.0': '1'},
+        8: {'1.0': '1', '': '0', '0.0': '0', '-1.0': '1'}
+    }
+    _image_paths = []
+    _labels = []
+    with open(filename, 'r') as f:
+
+        # Parse column header
+
+        header = f.readline().strip('\n').split(',')
+        selected_label_indices = [2, 5, 6, 8, 10]
+        _label_header = [
+            l.replace(' ', '_') for l in [
+                header[5 + i] for i in selected_label_indices]
+        ]
+
+        # Parse data rows
+
+        for row in f:
+            row = row.strip('\n').split(',')
+            image_path = join(BASEDIR, row[0])
+            assert exists(image_path), image_path
+            flg_enhance = False
+            labels = row[5:]
+            processed_labels = []
+            for index, label in enumerate(labels):
+                lm = label_map.get(index, None)
+                if lm is not None:
+                    label = lm[label]
+                    processed_labels.append(label)
+                    if label == '1' and index in cfg.enhance_index:
+                        flg_enhance = True
+
+            processed_labels = list(map(int, processed_labels))
+            _image_paths.append(image_path)
+            _labels.append(processed_labels)
+            if flg_enhance and mode == 'train':
+                for i in range(cfg.enhance_times):
+                    _image_paths.append(image_path)
+                    _labels.append(processed_labels)
+
+    return _label_header, _image_paths, _labels
+
+# This would be a much faster implementation using pandas.
+#
+# import pandas as pd
+#
+# def parse_csv(filename, cfg, mode):
+#     csv = pd.read_csv(filename)
+#     csv['Path'] = csv.Path.apply(lambda x: join(BASEDIR, x))
+#     csv.columns = [c.replace(' ', '_') for c in csv]
+#     labels = csv[['Cardiomegaly', 'Edema', 'Consolidation',
+#                     'Atelectasis', 'Pleural_Effusion']]
+#     labels = labels.replace(np.nan, 0).astype(int)
+#     _image_paths = csv.Path.tolist()
+#     _label_header = list(labels.columns)
+#     _labels = labels.values.tolist()
+#     return _label_header, _image_paths, _labels
 
 class ImageDataset(Dataset):
+
     def __init__(self, label_path, cfg, mode='train'):
         self.cfg = cfg
         self._label_header = None
         self._image_paths = []
         self._labels = []
         self._mode = mode
-        self.dict = [{'1.0': '1', '': '0', '0.0': '0', '-1.0': '0'},
-                     {'1.0': '1', '': '0', '0.0': '0', '-1.0': '1'}, ]
-        with open(label_path, 'r') as f:
-            header = f.readline().strip('\n').split(',')
-            self._label_header = [l.replace(' ', '_')
-                for l in (header[7], header[10], header[11],
-                          header[13], header[15])]
-            for line in f:
-                labels = []
-                fields = line.strip('\n').split(',')
-                image_path = join(BASEDIR, fields[0])
-                assert exists(image_path), image_path
-                flg_enhance = False
-                for index, value in enumerate(fields[5:]):
-                    if index == 5 or index == 8:
-                        labels.append(self.dict[1].get(value))
-                        if self.dict[1].get(
-                                value) == '1' and \
-                                self.cfg.enhance_index.count(index) > 0:
-                            flg_enhance = True
-
-                    elif index == 2 or index == 6 or index == 10:
-                        labels.append(self.dict[0].get(value))
-                        if self.dict[0].get(
-                                value) == '1' and \
-                                self.cfg.enhance_index.count(index) > 0:
-                            flg_enhance = True
-
-                labels = list(map(int, labels))
-                self._image_paths.append(image_path)
-                self._labels.append(labels)
-                if flg_enhance and self._mode == 'train':
-                    for i in range(self.cfg.enhance_times):
-                        self._image_paths.append(image_path)
-                        self._labels.append(labels)
-
+        self._label_header, self._image_paths, self._labels = parse_csv(
+            label_path, cfg, mode)
         self._num_image = len(self._image_paths)
 
     def __len__(self):

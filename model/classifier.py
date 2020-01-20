@@ -39,7 +39,7 @@ class Classifier(nn.Module):
             self.expand = 1
 
         self._init_classifier()
-        self._init_bn()
+        self._init_batchnorm()
         self._init_attention_map()
 
     def forward(self, x):
@@ -49,14 +49,13 @@ class Classifier(nn.Module):
         ---------
             x: tensor of shape (N, C, H, W)
         """
+        assert self.cfg.attention_map != "None"
         feat_map = self.backbone(x)
+        feat_map = self.attention_map(feat_map)
 
         logits = []
         logit_maps = []
         for index, num_class in enumerate(self.cfg.num_classes):
-            if self.cfg.attention_map != "None":
-                feat_map = self.attention_map(feat_map)
-
             classifier = self.get_classifier(index)
             batchnorm = self.get_batchnorm(index)
 
@@ -96,85 +95,46 @@ class Classifier(nn.Module):
     def _init_classifier(self):
         for index, num_class in enumerate(self.cfg.num_classes):
             if BACKBONES_TYPES[self.cfg.backbone] == 'vgg':
-                setattr(
-                    self,
-                    "fc_" + str(index),
-                    nn.Conv2d(
-                        512 * self.expand,
-                        num_class,
-                        kernel_size=1,
-                        stride=1,
-                        padding=0,
-                        bias=True))
+                num_features = 512
             elif BACKBONES_TYPES[self.cfg.backbone] == 'densenet':
-                setattr(
-                    self,
-                    "fc_" + str(index),
-                    nn.Conv2d(
-                        self.backbone.num_features * self.expand,
-                        num_class,
-                        kernel_size=1,
-                        stride=1,
-                        padding=0,
-                        bias=True))
+                num_features = self.backbone.num_features
             elif BACKBONES_TYPES[self.cfg.backbone] == 'inception':
-                setattr(
-                    self,
-                    "fc_" + str(index),
-                    nn.Conv2d(
-                        2048 * self.expand,
-                        num_class,
-                        kernel_size=1,
-                        stride=1,
-                        padding=0,
-                        bias=True))
+                num_features = 2048
             else:
-                raise Exception(
-                    'Unknown backbone type : {}'.format(self.cfg.backbone)
-                )
+                raise ValueError(f"Unknown backbone type: {self.cfg.backbone}")
 
-            classifier = getattr(self, "fc_" + str(index))
-            if isinstance(classifier, nn.Conv2d):
-                classifier.weight.data.normal_(0, 0.01)
-                classifier.bias.data.zero_()
+            clf = nn.Conv2d(num_features * self.expand, num_class,
+                            kernel_size=1, stride=1, padding=0, bias=True)
+            clf.weight.data.normal_(0, 0.01)
+            clf.bias.data.zero_()
+            setattr(self, f"fc_{index}", clf)
 
-    def _init_bn(self):
+    def _init_batchnorm(self):
         for index, num_class in enumerate(self.cfg.num_classes):
             if BACKBONES_TYPES[self.cfg.backbone] == 'vgg':
-                setattr(self, "bn_" + str(index),
-                        nn.BatchNorm2d(512 * self.expand))
+                num_features = 512
             elif BACKBONES_TYPES[self.cfg.backbone] == 'densenet':
-                setattr(
-                    self,
-                    "bn_" +
-                    str(index),
-                    nn.BatchNorm2d(
-                        self.backbone.num_features *
-                        self.expand))
+                num_features = self.backbone.num_features
             elif BACKBONES_TYPES[self.cfg.backbone] == 'inception':
-                setattr(self, "bn_" + str(index),
-                        nn.BatchNorm2d(2048 * self.expand))
+                num_features = 2048
             else:
-                raise Exception(
-                    'Unknown backbone type : {}'.format(self.cfg.backbone)
-                )
+                raise ValueError(f"Unknown backbone type: {self.cfg.backbone}")
+
+            setattr(self, f"bn_{index}",
+                    nn.BatchNorm2d(self.expand * num_features))
+
 
     def _init_attention_map(self):
         if BACKBONES_TYPES[self.cfg.backbone] == 'vgg':
-            setattr(self, "attention_map", AttentionMap(self.cfg, 512))
+            num_features = 512
         elif BACKBONES_TYPES[self.cfg.backbone] == 'densenet':
-            setattr(
-                self,
-                "attention_map",
-                AttentionMap(
-                    self.cfg,
-                    self.backbone.num_features))
+            num_features = self.backbone.num_features
         elif BACKBONES_TYPES[self.cfg.backbone] == 'inception':
-            setattr(self, "attention_map", AttentionMap(self.cfg, 2048))
+            num_features = 2048
         else:
-            raise Exception(
-                'Unknown backbone type : {}'.format(self.cfg.backbone)
-            )
+            raise ValueError(f"Unknown backbone type : {self.cfg.backbone}")
+
+        self.attention_map = AttentionMap(self.cfg, num_features)
 
     def cuda(self, device=None):
         return self._apply(lambda t: t.cuda(device))
