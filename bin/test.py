@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import os
 import sys
 import argparse
@@ -29,10 +31,12 @@ parser.add_argument('--num_workers', default=8, type=int, help="Number of "
                     "workers for each data loader")
 parser.add_argument('--device_ids', default='0', type=str, help="GPU indices "
                     "comma separated, e.g. '0,1' ")
+parser.add_argument('--cpu', action='store_true')
+parser.add_argument('--batch-size', type=int, default=None)
+parser.add_argument('--ignore-missing-images', action='store_true')
 
 if not os.path.exists('test'):
     os.mkdir('test')
-
 
 def get_pred(output, cfg):
     if cfg.criterion == 'BCE' or cfg.criterion == "FL":
@@ -53,8 +57,7 @@ def get_pred(output, cfg):
 def test_epoch(cfg, args, model, dataloader, out_csv_path):
     torch.set_grad_enabled(False)
     model.eval()
-    device_ids = list(map(int, args.device_ids.split(',')))
-    device = torch.device('cuda:{}'.format(device_ids[0]))
+    device = next(model.parameters()).device
     steps = len(dataloader)
     dataiter = iter(dataloader)
     num_tasks = len(cfg.num_classes)
@@ -88,31 +91,38 @@ def test_epoch(cfg, args, model, dataloader, out_csv_path):
 
 
 def run(args):
-    with open(args.model_path + 'cfg.json') as f:
+    with open(os.path.join(args.model_path, 'cfg.json')) as f:
         cfg = edict(json.load(f))
 
-    device_ids = list(map(int, args.device_ids.split(',')))
-    num_devices = torch.cuda.device_count()
-    if num_devices < len(device_ids):
-        raise Exception(
-            '#available gpu : {} < --device_ids : {}'
-            .format(num_devices, len(device_ids)))
-    device = torch.device('cuda:{}'.format(device_ids[0]))
+    if not args.cpu:
+        device_ids = list(map(int, args.device_ids.split(',')))
+        num_devices = torch.cuda.device_count()
+        if num_devices < len(device_ids):
+            raise Exception(
+                '#available gpu : {} < --device_ids : {}'
+                .format(num_devices, len(device_ids)))
+        device = torch.device('cuda:{}'.format(device_ids[0]))
+    else:
+        device_ids = []
+        device = torch.device('cpu')
 
     model = Classifier(cfg)
-    model = DataParallel(model, device_ids=device_ids).to(device).eval()
+    if device_ids:
+        model = DataParallel(model, device_ids=device_ids)
+    model = model.to(device).eval()
     ckpt_path = os.path.join(args.model_path, 'best.ckpt')
     ckpt = torch.load(ckpt_path, map_location=device)
-    model.module.load_state_dict(ckpt['state_dict'])
+    state_dict = ckpt.get('state_dict', ckpt)
+    getattr(model, 'module', model).load_state_dict(state_dict)
 
     dataloader_test = DataLoader(
-        ImageDataset(args.in_csv_path, cfg, mode='test'),
-        batch_size=cfg.dev_batch_size, num_workers=args.num_workers,
+        ImageDataset(args.in_csv_path, cfg, mode='test', ignore_missing_images=args.ignore_missing_images),
+        batch_size=args.batch_size or cfg.dev_batch_size, num_workers=args.num_workers,
         drop_last=False, shuffle=False)
 
     test_epoch(cfg, args, model, dataloader_test, args.out_csv_path)
-
-    print('Save best is step :', ckpt['step'], 'AUC :', ckpt['auc_dev_best'])
+    if 'step' in ckpt and 'auc_dev_best' in ckpt:
+        print('Save best is step :', ckpt['step'], 'AUC :', ckpt['auc_dev_best'])
 
 
 def main():

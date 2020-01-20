@@ -1,4 +1,5 @@
 
+from os import environ as env
 from os.path import join, exists
 import numpy as np
 from torch.utils.data import Dataset
@@ -7,11 +8,11 @@ from PIL import Image
 from data.imgaug import GetTransforms
 
 np.random.seed(0)
-BASEDIR = "/data/challenges"
+BASEDIR = join(env['DATA'], "challenges")
 
 
 class ImageDataset(Dataset):
-    def __init__(self, label_path, cfg, mode='train'):
+    def __init__(self, label_path, cfg, mode='train', ignore_missing_images=False):
         self.cfg = cfg
         self._label_header = None
         self._image_paths = []
@@ -31,7 +32,11 @@ class ImageDataset(Dataset):
                 labels = []
                 fields = line.strip('\n').split(',')
                 image_path = join(BASEDIR, fields[0])
-                assert exists(image_path), image_path
+                if not exists(image_path):
+                    if ignore_missing_images:
+                        continue
+                    else:
+                        raise ValueError("Missing image " + image_path)
                 flg_enhance = False
                 for index, value in enumerate(fields[5:]):
                     if index == 5 or index == 8:

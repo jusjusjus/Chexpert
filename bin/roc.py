@@ -1,3 +1,7 @@
+#!/usr/bin/env python
+
+from os import environ as env
+from os.path import join
 import os
 import sys
 import argparse
@@ -16,7 +20,7 @@ parser = argparse.ArgumentParser(description='Plot ROC')
 parser.add_argument('--pred_csv_path', default='test/test.csv',
                     metavar='PRED_CSV_PATH', type=str,
                     help="Path to the prediction in csv")
-parser.add_argument('--true_csv_path', default='dev.csv',
+parser.add_argument('--true_csv_path', default=join(env['DATA'], 'challenges', 'CheXpert-v1.0', 'valid.csv'),
                     metavar='TRUE_CSV_PATH', type=str,
                     help="Path to the ground truth in csv")
 parser.add_argument('--plot_path', default='test/', metavar='PLOT_PATH',
@@ -102,6 +106,7 @@ def run(args):
     images_true, probs_true, header_true = read_csv(
         args.plot_path + 'true_csv_done.csv', True)
 
+    images_true = [join(env['DATA'], 'challenges', I) for I in images_true]
     # assert header_pred == header_true
     assert images_pred == images_true
 
