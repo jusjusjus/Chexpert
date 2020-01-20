@@ -27,7 +27,7 @@ BACKBONES_TYPES = {'vgg19': 'vgg',
 class Classifier(nn.Module):
 
     def __init__(self, cfg):
-        super(Classifier, self).__init__()
+        super().__init__()
         self.cfg = cfg
         self.backbone = BACKBONES[cfg.backbone](cfg)
         self.global_pool = GlobalPool(cfg)
@@ -47,8 +47,8 @@ class Classifier(nn.Module):
 
         Parameter
         ---------
-            x: tensor of shape (N, C, H, W)"""
-
+            x: tensor of shape (N, C, H, W)
+        """
         feat_map = self.backbone(x)
 
         logits = []
@@ -57,8 +57,8 @@ class Classifier(nn.Module):
             if self.cfg.attention_map != "None":
                 feat_map = self.attention_map(feat_map)
 
-            classifier = self.classifier(index)
-            batchnorm = self.batchnorm(index)
+            classifier = self.get_classifier(index)
+            batchnorm = self.get_batchnorm(index)
 
             # (N, num_class, H, W)
             logit_map = None
@@ -80,11 +80,11 @@ class Classifier(nn.Module):
 
         return logits, logit_maps
 
-    def classifier(self, index):
+    def get_classifier(self, index):
         """return classification layer for column `index`"""
         return getattr(self, "fc_" + str(index))
 
-    def batchnorm(self, index):
+    def get_batchnorm(self, index):
         """return batch-norm layer for column `index`
 
         If batch norm is not computed, the method returns the identity
