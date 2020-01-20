@@ -1,3 +1,7 @@
+#!/usr/bin/env python
+
+from os import environ as env
+from os.path import join, splitext
 import os
 import sys
 import argparse
@@ -13,16 +17,14 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)) + '/../')
 
 parser = argparse.ArgumentParser(description='Plot ROC')
 
-parser.add_argument('--pred_csv_path', default='test/test.csv',
-                    metavar='PRED_CSV_PATH', type=str,
-                    help="Path to the prediction in csv")
-parser.add_argument('--true_csv_path', default='dev.csv',
-                    metavar='TRUE_CSV_PATH', type=str,
+parser.add_argument('true_csv_path', type=str,
                     help="Path to the ground truth in csv")
-parser.add_argument('--plot_path', default='test/', metavar='PLOT_PATH',
+parser.add_argument('--pred_csv_path', type=str, default='test/test.csv',
+                    help="Path to the prediction in csv")
+parser.add_argument('--plot_path', default='test',
                     type=str, help="Path to the ROC plots")
-parser.add_argument('base_name', default=None, metavar='BASE_NAME',
-                    type=str, help="Base name of the ROC plots")
+parser.add_argument('--output', type=str, default='roc.png',
+                    help="Basename of the ROC plots")
 parser.add_argument('--prob_thred', default=0.5, type=float,
                     help="Probability threshold")
 
@@ -48,8 +50,8 @@ def read_csv(csv_path, true_csv=False):
                         prob.append(dict_[0].get(value))
                 prob = list(map(int, prob))
                 probs.append(prob)
-    probs = np.array(probs)
 
+    probs = np.array(probs)
     return (image_paths, probs, header)
 
 
@@ -58,9 +60,8 @@ def get_study(path):
 
 
 def transform_csv(input_path, output_path):
-    """
-    to transform the first column of the original
-     csv or test csv from Path to Study
+    """to transform the first column of the original csv or test csv from Path
+    to Study
     """
     infile = pd.read_csv(input_path)
     infile = infile.fillna('Unknown')
@@ -71,9 +72,8 @@ def transform_csv(input_path, output_path):
 
 
 def transform_csv_en(input_path, output_path):
-    """
-    to transform the first column of the original
-     csv or test csv from Path to Study
+    """to transform the first column of the original
+    csv or test csv from Path to Study
     """
     infile = pd.read_csv(input_path)
     infile = infile.fillna('Unknown')
@@ -94,13 +94,15 @@ def transform_csv_en(input_path, output_path):
 
 
 def run(args):
-    transform_csv_en(args.pred_csv_path, args.plot_path + 'pred_csv_done.csv')
-    transform_csv(args.true_csv_path, args.plot_path + 'true_csv_done.csv')
+    transform_csv_en(args.pred_csv_path, join(args.plot_path, 'pred_csv_done.csv'))
+    transform_csv(args.true_csv_path, join(args.plot_path, 'true_csv_done.csv'))
 
     images_pred, probs_pred, header_pred = read_csv(
-        args.plot_path + 'pred_csv_done.csv')
+        join(args.plot_path, 'pred_csv_done.csv'))
     images_true, probs_true, header_true = read_csv(
-        args.plot_path + 'true_csv_done.csv', True)
+        join(args.plot_path, 'true_csv_done.csv'), True)
+    images_true = [join(env['DATA'], 'challenges', image)
+                   for image in images_true]
 
     # assert header_pred == header_true
     assert images_pred == images_true
@@ -133,9 +135,9 @@ def run(args):
         plt.title('{} ROC, AUC : {:.3f}, Acc : {:.3f}'.format(label, auc, acc))
         plt.plot(fpr, tpr, '-b')
         plt.grid()
-        plt.savefig(
-            os.path.join(args.plot_path, args.base_name
-                         + '_' + label + '_roc.png'), bbox_inches='tight')
+        name, ext = splitext(args.output)
+        outputname = join(args.plot_path, name + '-' + label + ext)
+        plt.savefig(outputname, bbox_inches='tight')
 
 
 def main():

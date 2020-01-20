@@ -1,4 +1,5 @@
 
+from os import environ as env
 from os.path import join, exists
 
 import cv2
@@ -10,9 +11,9 @@ from .augmentation import get_transforms
 
 np.random.seed(0)
 
-BASEDIR = '/data/challenges'
+BASEDIR = join(env['DATA'], 'challenges')
 
-def parse_csv(filename, cfg, mode):
+def parse_csv(filename, cfg, mode, ignore_missing_files=False):
     label_map = {
         2: {'1.0': '1', '': '0', '0.0': '0', '-1.0': '0'},
         6: {'1.0': '1', '': '0', '0.0': '0', '-1.0': '0'},
@@ -38,6 +39,9 @@ def parse_csv(filename, cfg, mode):
         for row in f:
             row = row.strip('\n').split(',')
             image_path = join(BASEDIR, row[0])
+            if ignore_missing_files:
+                if not exists(image_path):
+                    continue
             assert exists(image_path), image_path
             flg_enhance = False
             labels = row[5:]
@@ -79,14 +83,14 @@ def parse_csv(filename, cfg, mode):
 
 class ImageDataset(Dataset):
 
-    def __init__(self, label_path, cfg, mode='train'):
+    def __init__(self, label_path, cfg, mode='train', ignore_missing_files=False):
         self.cfg = cfg
         self._label_header = None
         self._image_paths = []
         self._labels = []
         self._mode = mode
         self._label_header, self._image_paths, self._labels = parse_csv(
-            label_path, cfg, mode)
+            label_path, cfg, mode, ignore_missing_files)
         self._num_image = len(self._image_paths)
 
     def __len__(self):
