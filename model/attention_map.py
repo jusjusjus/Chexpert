@@ -28,8 +28,8 @@ class CAModule(nn.Module):
     https://github.com/kobiso/CBAM-keras/blob/master/models/attention_module.py
     """
 
-    def __init__(self, num_channels, reduc_ratio=2):
-        super(CAModule, self).__init__()
+    def __init__(self, num_channels, *args, reduc_ratio=2, **kwargs):
+        super().__init__()
         self.num_channels = num_channels
         self.reduc_ratio = reduc_ratio
 
@@ -42,16 +42,16 @@ class CAModule(nn.Module):
 
     def forward(self, feat_map):
         # attention branch--squeeze operation
-        gap_out = feat_map.view(feat_map.size()[0], self.num_channels,
+        attention = feat_map.view(feat_map.shape[0], self.num_channels,
                                 -1).mean(dim=2)
 
         # attention branch--excitation operation
-        fc1_out = self.relu(self.fc1(gap_out))
-        fc2_out = self.sigmoid(self.fc2(fc1_out))
+        attention = self.relu(self.fc1(attention))
+        attention = self.sigmoid(self.fc2(attention))
 
         # attention operation
-        fc2_out = fc2_out.view(fc2_out.size()[0], fc2_out.size()[1], 1, 1)
-        feat_map = torch.mul(feat_map, fc2_out)
+        attention = attention.view(*attention.shape, 1, 1)
+        feat_map = torch.mul(feat_map, attention)
 
         return feat_map
 
@@ -64,36 +64,33 @@ class SAModule(nn.Module):
     https://github.com/junfu1115/DANet/blob/master/encoding/nn/attention.py
     """
 
-    def __init__(self, num_channels):
-        super(SAModule, self).__init__()
-        self.num_channels = num_channels
-
-        self.conv1 = nn.Conv2d(in_channels=num_channels,
-                               out_channels=num_channels // 8, kernel_size=1)
-        self.conv2 = nn.Conv2d(in_channels=num_channels,
-                               out_channels=num_channels // 8, kernel_size=1)
-        self.conv3 = nn.Conv2d(in_channels=num_channels,
-                               out_channels=num_channels, kernel_size=1)
+    def __init__(self, num_channels, *args, **kwargs):
+        super().__init__()
+        C = num_channels
+        C8 = num_channels // 8
+        self.conv1 = nn.Conv2d(C, C8, kernel_size=1)
+        self.conv2 = nn.Conv2d(C, C8, kernel_size=1)
+        self.conv3 = nn.Conv2d(C, C, kernel_size=1)
         self.gamma = nn.Parameter(torch.zeros(1))
 
     def forward(self, feat_map):
-        batch_size, num_channels, height, width = feat_map.size()
+        B, C, H, W = feat_map.shape
+        # C8: Reduced number of channels
+        C8 = C // 8
+        # A: Area
+        A = H * W
 
-        conv1_proj = self.conv1(feat_map).view(batch_size, -1,
-                                               width * height).permute(0, 2, 1)
+        mat1 = self.conv1(feat_map).view(B, C8, A)
+        mat2 = self.conv2(feat_map).view(B, C8, A)
 
-        conv2_proj = self.conv2(feat_map).view(batch_size, -1, width * height)
-
-        relation_map = torch.bmm(conv1_proj, conv2_proj)
-        attention = F.softmax(relation_map, dims=-1)
-
-        conv3_proj = self.conv3(feat_map).view(batch_size, -1, width * height)
-
-        feat_refine = torch.bmm(conv3_proj, attention.permute(0, 2, 1))
-        feat_refine = feat_refine.view(batch_size, num_channels, height, width)
-
-        feat_map = self.gamma * feat_refine + feat_map
-
+        attention = torch.bmm(mat1.permute(0, 2, 1), mat2)
+        # assert attention.shape == (B, A, A)
+        attention = F.softmax(attention, dims=-1)
+        mat3 = self.conv3(feat_map).view(B, C, A)
+        refined_map = torch.bmm(mat3, attention.permute(0, 2, 1))
+        # assert refined_map.shape == (B, C, A)
+        refined_map = refined_map.view(B, C, H, W)
+        feat_map = self.gamma * refined_map + feat_map
         return feat_map
 
 
@@ -104,13 +101,14 @@ class FPAModule(nn.Module):
     """
 
     def __init__(self, num_channels, norm_type):
-        super(FPAModule, self).__init__()
+        super().__init__()
 
         # global pooling branch
         self.gap_branch = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             Conv2dNormRelu(num_channels, num_channels, kernel_size=1,
-                           norm_type=norm_type))
+                           norm_type=norm_type)
+        )
 
         # middle branch
         self.mid_branch = Conv2dNormRelu(num_channels, num_channels,
@@ -160,27 +158,24 @@ class FPAModule(nn.Module):
         return feat_map
 
 
+attention_modules = {
+    'CAM': CAModule,
+    'SAM': SAModule,
+    'FPA': FPAModule,
+    'none': lambda x, y: None
+}
+
 class AttentionMap(nn.Module):
 
     def __init__(self, cfg, num_channels):
-        super(AttentionMap, self).__init__()
-        self.cfg = cfg
-        self.channel_attention = CAModule(num_channels)
-        self.spatial_attention = SAModule(num_channels)
-        self.pyramid_attention = FPAModule(num_channels, cfg.norm_type)
+        super().__init__()
+        assert cfg.attention_map in attention_modules, f"""
+        Unknown type '{self.cfg.attention_map}'"""
+        self.map = attention_modules[cfg.attention_map](
+            num_channels, cfg.norm_type)
+
+    def forward(self, feat_map):
+        return self.map(feat_map) if self.map else feat_map
 
     def cuda(self, device=None):
         return self._apply(lambda t: t.cuda(device))
-
-    def forward(self, feat_map):
-        if self.cfg.attention_map == "CAM":
-            return self.channel_attention(feat_map)
-        elif self.cfg.attention_map == "SAM":
-            return self.spatial_attention(feat_map)
-        elif self.cfg.attention_map == "FPA":
-            return self.pyramid_attention(feat_map)
-        elif self.cfg.attention_map == "None":
-            return feat_map
-        else:
-            Exception('Unknown attention type : {}'
-                      .format(self.cfg.attention_map))
