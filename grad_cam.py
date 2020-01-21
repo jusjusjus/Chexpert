@@ -1,19 +1,27 @@
 
+# The code in this file was largely copied from the repository from kazuto1011.
+#
+# https://github.com/kazuto1011/grad-cam-pytorch
+
 import cv2
 import torch
 import numpy as np
 from torch.nn import functional as F
 from matplotlib import cm
 
-def save_gradcam(filename, gcam, raw_image, paper_cmap=False):
+def combine_image_and_gcam(gcam, img, paper_cmap=False):
     gcam = gcam.cpu().numpy()
-    cmap = cm.jet_r(gcam)[..., :3] * 255.0
+    cmap = cm.Oranges(gcam)[..., :3] * 255.0
     if paper_cmap:
         alpha = gcam[..., None]
-        gcam = alpha * cmap + (1 - alpha) * raw_image
+        gcam = alpha * cmap + (1 - alpha) * img
     else:
-        gcam = (cmap.astype(np.float) + raw_image.astype(np.float)) / 2
+        gcam = (cmap.astype(np.float) + img.astype(np.float)) / 2
 
+    return gcam
+
+def save_gradcam(filename, gcam, raw_image, paper_cmap=False):
+    gcam = combine_image_and_gcam(gcam, raw_image, paper_cmap)
     cv2.imwrite(filename, np.uint8(gcam))
 
 class _BaseWrapper(object):
