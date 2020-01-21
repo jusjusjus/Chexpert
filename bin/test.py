@@ -61,7 +61,7 @@ def test_epoch(cfg, args, model, dataloader, out_csv_path):
     device = next(model.parameters()).device
     num_tasks = len(cfg.num_classes)
 
-    test_header = [
+    csv_header = [
         'Path',
         'Cardiomegaly',
         'Edema',
@@ -69,22 +69,24 @@ def test_epoch(cfg, args, model, dataloader, out_csv_path):
         'Atelectasis',
         'Pleural Effusion']
 
+    # Predict and write probabilities to `out_csv_path`
+
     with open(out_csv_path, 'w') as f:
-        f.write(','.join(test_header) + '\n')
+        f.write(','.join(csv_header) + '\n')
         for step, (images, paths) in enumerate(dataloader):
+            print(f"Processing batch {step + 1} of {len(dataloader)}")
             images = images.to(device)
             output, _ = model(images)
             batch_size = len(paths)
             pred = np.zeros((num_tasks, batch_size))
 
-            for i in range(num_tasks):
-                pred[i] = get_pred(output[i], cfg)
+            for j in range(num_tasks):
+                pred[j] = get_pred(output[j], cfg)
 
             for i in range(batch_size):
-                batch = ','.join(map(lambda x: '{}'.format(x), pred[:, i]))
+                batch = ','.join(map(str, pred[:, i]))
                 result = paths[i] + ',' + batch
                 f.write(result + '\n')
-                print(f"Image: {paths[i]}, Prob: {batch}")
 
 
 def build_model(cfg, paramsfile, device):
