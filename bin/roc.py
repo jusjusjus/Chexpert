@@ -1,16 +1,16 @@
 #!/usr/bin/env python
 
 import argparse
+from os import environ as env
+from os.path import join, exists, splitext
+
+validfile = join(env['DATA'], 'challenges', 'CheXpert-v1.0', 'valid.csv')
 
 parser = argparse.ArgumentParser(description='Plot ROC')
-parser.add_argument('true_csv_path', type=str,
-                    help="Path to the ground truth in csv")
-parser.add_argument('--pred_csv_path', type=str, default='test/test.csv',
+parser.add_argument('pred_csv_path', type=str,
                     help="Path to the prediction in csv")
-parser.add_argument('--plot_path', type=str, default='test',
-                    help="Path to the ROC plots")
-parser.add_argument('--output', type=str, default='roc.png',
-                    help="Basename of the ROC plots")
+parser.add_argument('--true_csv_path', type=str, default=validfile,
+                    help="Path to the ground truth in csv")
 parser.add_argument('--threshold', type=float, default=0.5,
                     help="Probability threshold")
 args = parser.parse_args()
@@ -94,9 +94,9 @@ def transform_csv_en(input_path, output_path):
     ).reset_index()['Pleural Effusion']
     outfile.to_csv(output_path, index=False)
 
-
-pred_csv_path = join(args.plot_path, 'pred_csv_done.csv')
-true_csv_path = join(args.plot_path, 'true_csv_done.csv')
+plot_path = dirname(args.pred_csv_path)
+pred_csv_path = join(plot_path, 'pred_csv_done.csv')
+true_csv_path = join(plot_path, 'true_csv_done.csv')
 
 transform_csv_en(args.pred_csv_path, pred_csv_path)
 transform_csv(args.true_csv_path, true_csv_path)
@@ -136,6 +136,6 @@ for label, y_true, y_pred in zip(header, probs_true, probs_pred):
     plt.ylabel('Sensitivity')
     plt.grid()
 
-    name, ext = splitext(args.output)
-    outputname = join(args.plot_path, name + '-' + label + ext)
+    path, _ = splitext(args.pred_csv_path)
+    outputname = join(path + '-' + label + '.png')
     plt.savefig(outputname, bbox_inches='tight')
