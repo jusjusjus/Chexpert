@@ -49,9 +49,9 @@ class Classifier(nn.Module):
         ---------
             x: tensor of shape (N, C, H, W)
         """
-        assert self.cfg.attention_map != "None"
         feat_map = self.backbone(x)
-        feat_map = self.attention_map(feat_map)
+        if self.cfg.attention_map != 'none':
+            feat_map = self.attention_map(feat_map)
 
         logits = []
         logit_maps = []

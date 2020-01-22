@@ -1,12 +1,18 @@
 #!/usr/bin/env python
 
 import argparse
+from os import environ as env
+from os.path import join, exists, splitext
+
+validfile = join(env['DATA'], 'challenges', 'CheXpert-v1.0', 'valid.csv')
 
 parser = argparse.ArgumentParser(description='Test model')
 parser.add_argument('model', type=str, help="Path to the trained models")
-parser.add_argument('dataset', type=str,
+parser.add_argument('--ckpt', type=str, default='best.ckpt',
+                    help="Checkpoint with parameters in model folder")
+parser.add_argument('-d', '--dataset', type=str, default=validfile,
                     help="Path to the input image path in csv")
-parser.add_argument('--out_csv_path', type=str, default='test/test.csv',
+parser.add_argument('-o', '--output-folder', type=str, default=None,
                     help="Path to the ouput predictions in csv")
 parser.add_argument('--num_workers', type=int, default=8,
                     help="Number of workers for each data loader")
@@ -20,8 +26,18 @@ parser.add_argument('--batch-size', type=int, default=16,
 opt = parser.parse_args()
 device_ids = list(map(int, opt.device_ids.split(',')))
 
+from glob import glob
+
+ckpt = join(opt.model, opt.ckpt)
+assert exists(ckpt), f"""'{ckpt}' does not exist.
+Choose one of {glob(join(opt.model, '*.ckpt'))}"""
+
+output_file = join(opt.output_folder or opt.model, 'test',
+                   splitext(opt.ckpt)[0] + '.csv')
+assert not exists(output_file), f"{output_file} already computed"
+
 from os import makedirs
-from os.path import dirname, abspath, join
+from os.path import dirname, abspath
 from sys import path
 path.insert(0, '.')
 
@@ -38,9 +54,6 @@ from data.dataset import ImageDataset  # noqa
 from model.classifier import Classifier  # noqa
 
 
-makedirs('test', exist_ok=True)
-
-
 def get_pred(output, cfg):
     if cfg.criterion in ('BCE', 'FL'):
         assert all(n == 1 for n in cfg.num_classes)
@@ -55,7 +68,7 @@ def get_pred(output, cfg):
     return pred
 
 
-def test_epoch(cfg, args, model, dataloader, out_csv_path):
+def test_epoch(cfg, args, model, dataloader, output_file):
     torch.set_grad_enabled(False)
     model.eval()
     device = next(model.parameters()).device
@@ -69,9 +82,9 @@ def test_epoch(cfg, args, model, dataloader, out_csv_path):
         'Atelectasis',
         'Pleural Effusion']
 
-    # Predict and write probabilities to `out_csv_path`
+    # Predict and write probabilities to `output_file`
 
-    with open(out_csv_path, 'w') as f:
+    with open(output_file, 'w') as f:
         f.write(','.join(csv_header) + '\n')
         for step, (images, paths) in enumerate(dataloader):
             print(f"Processing batch {step + 1} of {len(dataloader)}")
@@ -100,7 +113,14 @@ def build_model(cfg, paramsfile, device):
               f"with AUC: {ckpt['auc_dev_best']}")
     return model
 
-with open(join(opt.model, 'cfg.json'), 'r') as fp:
+
+makedirs(dirname(output_file), exist_ok=True)
+
+# We search for the next best json file and interpret it as
+# the configuration file.
+
+config_file = glob(join(opt.model, '*.json'))[0]
+with open(config_file, 'r') as fp:
     cfg = edict(json.load(fp))
 
 if not opt.cpu:
@@ -112,9 +132,9 @@ else:
     num_devices = 0
     device = torch.device('cpu')
 
-model = build_model(cfg, join(opt.model, 'best.ckpt'), device)
+model = build_model(cfg, join(opt.model, opt.ckpt), device)
 dataset = ImageDataset(opt.dataset, cfg, mode='test')
 dataloader = DataLoader(dataset, batch_size=opt.batch_size, shuffle=False,
                         drop_last=False, num_workers=opt.num_workers)
 
-test_epoch(cfg, opt, model, dataloader, opt.out_csv_path)
+test_epoch(cfg, opt, model, dataloader, output_file)
