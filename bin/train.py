@@ -1,33 +1,15 @@
 #!/usr/bin/env python
 
 import os
-from os.path import dirname, abspath
+from os.path import dirname, abspath, join
 from sys import path
-path.append(dirname(abspath(__file__)) + '..')
+path.append(join(dirname(abspath(__file__)), '..'))
 import json
 import time
 import logging
 import argparse
 import subprocess
 from shutil import copyfile
-
-import numpy as np
-import torch
-import torch.nn.functional as F
-from torch.nn import DataParallel
-from torch.utils.data import DataLoader
-from sklearn import metrics
-from easydict import EasyDict as edict
-from tensorboardX import SummaryWriter
-
-torch.manual_seed(0)
-torch.cuda.manual_seed_all(0)
-
-from data.dataset import ImageDataset  # noqa
-from utils.misc import lr_schedule  # noqa
-from model.utils import get_optimizer  # noqa
-from model.classifier import Classifier  # noqa
-
 
 parser = argparse.ArgumentParser(description='Train model')
 parser.add_argument('cfg_path', default=None, metavar='CFG_PATH', type=str,
@@ -45,6 +27,24 @@ parser.add_argument('--resume', default=0, type=int, help="If resume from "
 parser.add_argument('--logtofile', default=False, type=bool, help="Save log "
                     "in save_path/log.txt if set True")
 parser.add_argument('--verbose', default=False, type=bool, help="Detail info")
+args = parser.parse_args()
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.nn import DataParallel
+from torch.utils.data import DataLoader
+from sklearn import metrics
+from easydict import EasyDict as edict
+from tensorboardX import SummaryWriter
+
+torch.manual_seed(0)
+torch.cuda.manual_seed_all(0)
+
+from data.dataset import ImageDataset  # noqa
+from utils.misc import lr_schedule  # noqa
+from model.utils import get_optimizer  # noqa
+from model.classifier import Classifier  # noqa
 
 
 def get_loss(output, target, index, device, cfg):
@@ -453,7 +453,6 @@ def run(args):
 
 
 def main():
-    args = parser.parse_args()
     if args.verbose is True:
         print('Using the specified args:')
         print(args)
